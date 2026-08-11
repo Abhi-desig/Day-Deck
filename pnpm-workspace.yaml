@@ -1,0 +1,12 @@
+# pnpm 11 moved build-script approval here from package.json's "pnpm" field.
+# better-sqlite3 is a native module and MUST compile, otherwise the main
+# process has no database. electron-winstaller is Windows-only packaging.
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  esbuild: true
+  # node-pty has no published prebuild for this platform, so its install script
+  # compiles it. It targets N-API (node-addon-api), which is ABI-stable, so the
+  # binary Node builds here loads unchanged in Electron — no electron-rebuild.
+  node-pty: true
+  electron-winstaller: false
