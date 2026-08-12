@@ -24,7 +24,8 @@ const SECTION_ORDER: Array<{ id: SectionId; label: string; key: string }> = [
   { id: 'projects', label: 'Projects', key: '2' },
   { id: 'goals', label: 'Goals Admin', key: '3' },
   { id: 'tracker', label: 'Tracker', key: '4' },
-  { id: 'stickers', label: 'Stickers', key: '5' }
+  { id: 'storyboards', label: 'Storyboards', key: '5' },
+  { id: 'stickers', label: 'Stickers', key: '6' }
 ]
 
 /**
@@ -103,6 +104,13 @@ export function CommandPalette() {
         run: () => request('reminders', 'today')
       },
       {
+        id: 'today-tags',
+        label: 'Tags and keyword rules',
+        group: 'Today',
+        keywords: 'tag segment amber keyword cutoff friday label filing',
+        run: () => request('tags', 'today')
+      },
+      {
         id: 'goal-new',
         label: 'New goal from a curriculum',
         group: 'Goals',
@@ -111,6 +119,13 @@ export function CommandPalette() {
           request('newGoal', 'goals')
           useCurriculum.getState().startComposing()
         }
+      },
+      {
+        id: 'board-new',
+        label: 'New storyboard',
+        group: 'Storyboards',
+        keywords: 'board canvas frame prompt segment project',
+        run: () => request('newBoard', 'storyboards')
       },
       {
         id: 'sticker-new',

@@ -38,6 +38,20 @@
   --color-goal-mint: #5eead4;
   --color-goal-rose: #fb7185;
 
+  /* Tags. Its own ramp rather than a reuse of the goal palette: the two appear
+     side by side on a slot row — a goal chip and a tag chip — and sharing five
+     hues between them would make "which plan is this" and "what is it filed
+     under" look like the same axis. Eight, because tags are the one thing here
+     the user keeps adding. */
+  --color-tag-amber: #ffb020;
+  --color-tag-violet: #b794f6;
+  --color-tag-sky: #7cb3ff;
+  --color-tag-mint: #5eead4;
+  --color-tag-rose: #fb7185;
+  --color-tag-coral: #ff9472;
+  --color-tag-lime: #b3e05c;
+  --color-tag-cyan: #56d4e8;
+
   /* Sticker paper. Deliberately warmer and lower-chroma than the goal palette —
      a note is not a goal, and the wall should read as paper on a dark desk
      rather than as five more colour-coded categories. */
@@ -221,6 +235,27 @@
   .monaco-editor .find-widget,
   .monaco-menu-container {
     background-color: var(--color-surface) !important;
+  }
+
+  /*
+   * The storyboard surface.
+   *
+   * A dot grid rather than a flat fill, because an infinite canvas with no
+   * texture gives panning nothing to move against — the frames slide and the
+   * space behind them looks static. Deliberately faint: it is a sense of
+   * parallax, not a ruler.
+   *
+   * The dots do not scale with the zoom. Tying them to it would mean repainting
+   * a full-surface background gradient on every frame of a pinch, which is the
+   * single most expensive thing this section could do.
+   */
+  .storyboard-grid {
+    background-color: rgb(18 18 23 / 0.6);
+    background-image: radial-gradient(
+      rgb(255 255 255 / 0.06) 1px,
+      transparent 1px
+    );
+    background-size: 22px 22px;
   }
 
   /* Lifts the focused card off the canvas: a contact shadow, a wide ambient
