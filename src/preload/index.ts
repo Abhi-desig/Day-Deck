@@ -85,7 +85,32 @@ const api: DeckApi = {
     list: () => ipcRenderer.invoke(IPC.stickersList),
     create: (input) => ipcRenderer.invoke(IPC.stickersCreate, input),
     update: (id, patch) => ipcRenderer.invoke(IPC.stickersUpdate, id, patch),
-    remove: (id) => ipcRenderer.invoke(IPC.stickersDelete, id)
+    remove: (id) => ipcRenderer.invoke(IPC.stickersDelete, id),
+    folders: () => ipcRenderer.invoke(IPC.stickerFoldersList),
+    createFolder: (input) => ipcRenderer.invoke(IPC.stickerFoldersCreate, input),
+    updateFolder: (id, patch) =>
+      ipcRenderer.invoke(IPC.stickerFoldersUpdate, id, patch),
+    removeFolder: (id) => ipcRenderer.invoke(IPC.stickerFoldersDelete, id)
+  },
+  tags: {
+    list: () => ipcRenderer.invoke(IPC.tagsList),
+    create: (input) => ipcRenderer.invoke(IPC.tagsCreate, input),
+    update: (id, patch) => ipcRenderer.invoke(IPC.tagsUpdate, id, patch),
+    remove: (id) => ipcRenderer.invoke(IPC.tagsDelete, id),
+    reorder: (orderedIds) => ipcRenderer.invoke(IPC.tagsReorder, orderedIds),
+    attach: (slotId, tagId, origin) =>
+      ipcRenderer.invoke(IPC.tagsAttach, slotId, tagId, origin),
+    detach: (slotId, tagId) => ipcRenderer.invoke(IPC.tagsDetach, slotId, tagId)
+  },
+  storyboards: {
+    list: () => ipcRenderer.invoke(IPC.boardsList),
+    create: (input) => ipcRenderer.invoke(IPC.boardsCreate, input),
+    update: (id, patch) => ipcRenderer.invoke(IPC.boardsUpdate, id, patch),
+    remove: (id) => ipcRenderer.invoke(IPC.boardsDelete, id),
+    frames: (boardId) => ipcRenderer.invoke(IPC.framesList, boardId),
+    createFrame: (input) => ipcRenderer.invoke(IPC.framesCreate, input),
+    updateFrame: (id, patch) => ipcRenderer.invoke(IPC.framesUpdate, id, patch),
+    removeFrame: (id) => ipcRenderer.invoke(IPC.framesDelete, id)
   },
   notify: {
     prefs: () => ipcRenderer.invoke(IPC.notifyGetPrefs),

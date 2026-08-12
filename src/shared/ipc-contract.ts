@@ -23,6 +23,10 @@ import type {
   NewGoalNote,
   NewSlot,
   NewSticker,
+  NewStickerFolder,
+  NewStoryboard,
+  NewStoryFrame,
+  NewTag,
   NewWeeklyTemplate,
   NotifyPrefs,
   Project,
@@ -35,8 +39,17 @@ import type {
   SlotPatch,
   SlotStatus,
   Sticker,
+  StickerFolder,
+  StickerFolderPatch,
   StickerPatch,
+  Storyboard,
+  StoryboardPatch,
+  StoryFrame,
+  StoryFramePatch,
   SubdivideResult,
+  Tag,
+  TagOrigin,
+  TagPatch,
   TrackerWeek,
   WeeklyTemplate
 } from './types'
@@ -93,6 +106,29 @@ export const IPC = {
   stickersCreate: 'stickers:create',
   stickersUpdate: 'stickers:update',
   stickersDelete: 'stickers:delete',
+  stickerFoldersList: 'stickerFolders:list',
+  stickerFoldersCreate: 'stickerFolders:create',
+  stickerFoldersUpdate: 'stickerFolders:update',
+  stickerFoldersDelete: 'stickerFolders:delete',
+
+  /** The second dimension on a slot. Categories are untouched by all of these. */
+  tagsList: 'tags:list',
+  tagsCreate: 'tags:create',
+  tagsUpdate: 'tags:update',
+  tagsDelete: 'tags:delete',
+  tagsReorder: 'tags:reorder',
+  /** Attaching by hand outranks the keyword rules; detaching is absolute. */
+  tagsAttach: 'tags:attach',
+  tagsDetach: 'tags:detach',
+
+  boardsList: 'boards:list',
+  boardsCreate: 'boards:create',
+  boardsUpdate: 'boards:update',
+  boardsDelete: 'boards:delete',
+  framesList: 'frames:list',
+  framesCreate: 'frames:create',
+  framesUpdate: 'frames:update',
+  framesDelete: 'frames:delete',
 
   notifyGetPrefs: 'notify:getPrefs',
   notifySetPrefs: 'notify:setPrefs',
@@ -225,6 +261,46 @@ export interface DeckApi {
     /** Dragging writes through this on drop, not on every frame. */
     update(id: string, patch: StickerPatch): Promise<Sticker>
     remove(id: string): Promise<void>
+    /** Optional grouping. A note with no folder is the normal case. */
+    folders(): Promise<StickerFolder[]>
+    createFolder(input: NewStickerFolder): Promise<StickerFolder>
+    updateFolder(id: string, patch: StickerFolderPatch): Promise<StickerFolder>
+    /** Releases its notes back onto the loose wall rather than deleting them. */
+    removeFolder(id: string): Promise<void>
+  }
+  /**
+   * Tags, and the attachments between them and slots.
+   *
+   * `attach`/`detach` are the manual path only. Keyword matching happens inside
+   * the slot writes themselves, so nothing in the renderer has to remember to
+   * trigger it.
+   */
+  tags: {
+    list(): Promise<Tag[]>
+    create(input: NewTag): Promise<Tag>
+    /**
+     * Editing what a tag matches re-files every existing slot against the new
+     * rules — auto attachments only, never one made by hand.
+     */
+    update(id: string, patch: TagPatch): Promise<Tag>
+    remove(id: string): Promise<void>
+    reorder(orderedIds: string[]): Promise<Tag[]>
+    /** Returns the slot's whole tag set, which is what the row re-renders from. */
+    attach(slotId: string, tagId: string, origin?: TagOrigin): Promise<Slot>
+    detach(slotId: string, tagId: string): Promise<Slot>
+  }
+  /** The storyboard space: boards are the segments, frames live on a canvas. */
+  storyboards: {
+    list(): Promise<Storyboard[]>
+    create(input: NewStoryboard): Promise<Storyboard>
+    update(id: string, patch: StoryboardPatch): Promise<Storyboard>
+    remove(id: string): Promise<void>
+    /** Every frame on one board. Frames carry their own canvas coordinates. */
+    frames(boardId: string): Promise<StoryFrame[]>
+    createFrame(input: NewStoryFrame): Promise<StoryFrame>
+    /** Dragging writes through this on drop, same as the stickers wall. */
+    updateFrame(id: string, patch: StoryFramePatch): Promise<StoryFrame>
+    removeFrame(id: string): Promise<void>
   }
   notify: {
     prefs(): Promise<NotifyPrefs>

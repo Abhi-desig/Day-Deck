@@ -8,10 +8,12 @@ import { TextEffect } from '../../components/motion-primitives/TextEffect'
 import { EASE_OUT, SPRING } from '../../lib/motion'
 import { WeeklyPanel } from './WeeklyPanel'
 import { RemindersPanel } from './RemindersPanel'
+import { TagsPanel } from './TagsPanel'
 
 export function Today() {
   const [weeklyOpen, setWeeklyOpen] = useState(false)
   const [remindersOpen, setRemindersOpen] = useState(false)
+  const [tagsOpen, setTagsOpen] = useState(false)
   const [bannerDismissed, setBannerDismissed] = useState(false)
 
   const result = useDeck((s) => s.bootstrapResult)
@@ -22,6 +24,7 @@ export function Today() {
   // on one fires exactly once per request and needs nothing cleared afterwards.
   const weeklyIntent = useIntent('weekly')
   const remindersIntent = useIntent('reminders')
+  const tagsIntent = useIntent('tags')
 
   useEffect(() => {
     if (weeklyIntent > 0) setWeeklyOpen(true)
@@ -30,6 +33,10 @@ export function Today() {
   useEffect(() => {
     if (remindersIntent > 0) setRemindersOpen(true)
   }, [remindersIntent])
+
+  useEffect(() => {
+    if (tagsIntent > 0) setTagsOpen(true)
+  }, [tagsIntent])
 
   const rolledCount = result?.rolled.length ?? 0
   const seededCount = result?.seededSlotIds.length ?? 0
@@ -54,6 +61,13 @@ export function Today() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setTagsOpen(true)}
+            className="rounded-md border border-line-soft px-2.5 py-1 text-[11.5px] text-ink-dim transition-colors hover:border-line hover:text-ink"
+          >
+            Tags
+          </button>
           <button
             type="button"
             onClick={() => setRemindersOpen(true)}
@@ -108,6 +122,7 @@ export function Today() {
         open={remindersOpen}
         onClose={() => setRemindersOpen(false)}
       />
+      <TagsPanel open={tagsOpen} onClose={() => setTagsOpen(false)} />
     </div>
   )
 }

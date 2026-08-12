@@ -5,14 +5,16 @@ import { useDeck } from './store/useDeck'
 import { useProjects } from './store/useProjects'
 import { useShell } from './store/useShell'
 import { useStickers } from './store/useStickers'
+import { useTags } from './store/useTags'
 import { CommandPalette } from './components/shell/CommandPalette'
 import { DataPanel } from './components/shell/DataPanel'
-import { SideNav } from './components/shell/SideNav'
+import { Dock } from './components/shell/Dock'
 import { TransitionPanel } from './components/motion-primitives/TransitionPanel'
 import { Today } from './sections/Today'
 import { Projects } from './sections/Projects'
 import { GoalsAdmin } from './sections/GoalsAdmin'
 import { Tracker } from './sections/Tracker'
+import { Storyboards } from './sections/Storyboards'
 import { Stickers } from './sections/Stickers'
 
 export function App() {
@@ -28,6 +30,7 @@ export function App() {
   const error = useDeck((s) => s.error)
   const init = useDeck((s) => s.init)
   const loadStickers = useStickers((s) => s.load)
+  const loadTags = useTags((s) => s.load)
 
   useEffect(() => {
     void init()
@@ -39,6 +42,13 @@ export function App() {
   useEffect(() => {
     void loadStickers()
   }, [loadStickers])
+
+  // Same reason: slot rows render their tag chips and the quick-add bar
+  // previews what a title will match, so the Today card cannot wait for the
+  // Tracker or the tag panel to have been opened once.
+  useEffect(() => {
+    void loadTags()
+  }, [loadTags])
 
   const direction = index >= lastIndex.current ? 1 : -1
   useEffect(() => {
@@ -60,6 +70,7 @@ export function App() {
       <Projects key="projects" />,
       <GoalsAdmin key="goals" />,
       <Tracker key="tracker" />,
+      <Storyboards key="storyboards" />,
       <Stickers key="stickers" />
     ],
     []
@@ -69,10 +80,13 @@ export function App() {
     // reducedMotion="user" makes Motion drop transform/layout animations
     // system-wide when the OS asks for it, without a prop on every component.
     <MotionConfig reducedMotion="user">
-      <div className="app-ambient flex h-full w-full text-ink">
-        <SideNav active={section} onSelect={go} />
+      {/* `relative` because the dock is positioned against this, and it floats
+          over the content rather than taking a column of its own. `main` keeps
+          the matching left padding so nothing ever renders beneath it. */}
+      <div className="app-ambient relative flex h-full w-full text-ink">
+        <Dock active={section} onSelect={go} />
 
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main className="relative flex min-w-0 flex-1 flex-col pl-[92px]">
           <div className="drag-region h-[52px] shrink-0" />
 
           {error ? (

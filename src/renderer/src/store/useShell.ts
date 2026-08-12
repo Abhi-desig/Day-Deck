@@ -16,7 +16,13 @@ import type { SectionId } from '@shared/types'
  * counter watched by an effect fires exactly once per request, needs no
  * cleanup, and works whether the section was already open or has just arrived.
  */
-export type IntentId = 'weekly' | 'reminders' | 'newGoal' | 'newSticker'
+export type IntentId =
+  | 'weekly'
+  | 'reminders'
+  | 'newGoal'
+  | 'newSticker'
+  | 'tags'
+  | 'newBoard'
 
 type Intents = Record<IntentId, number>
 
@@ -24,7 +30,9 @@ const NO_INTENTS: Intents = {
   weekly: 0,
   reminders: 0,
   newGoal: 0,
-  newSticker: 0
+  newSticker: 0,
+  tags: 0,
+  newBoard: 0
 }
 
 interface ShellState {

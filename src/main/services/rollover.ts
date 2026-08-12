@@ -3,6 +3,7 @@ import type { DateKey } from '@shared/date'
 import type { RolloverRecord } from '@shared/types'
 import type { Db } from '../db'
 import type { SlotRow } from '../db/slots'
+import { copyTags } from '../db/tags'
 
 /**
  * Carries unfinished work forward to today.
@@ -73,6 +74,10 @@ export function runRollover(db: Db, today: DateKey): RolloverRecord[] {
       markRolled.run(row.id)
 
       if (info.changes > 0) {
+        // The carried slot is the same work on a later day, so its filing comes
+        // with it — including tags attached by hand, which re-matching would
+        // quietly demote back to whatever the title happens to contain.
+        copyTags(db, row.id, newId)
         records.push({
           slotId: row.id,
           newSlotId: newId,

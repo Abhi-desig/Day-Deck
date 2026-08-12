@@ -1,12 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  AnimatePresence,
+  motion,
+  useMotionValue,
+  useReducedMotion
+} from 'motion/react'
 import { addDays, labelFor, todayKey } from '@shared/date'
-import type { NewSticker, Sticker, StickerColor } from '@shared/types'
+import type {
+  NewSticker,
+  Sticker,
+  StickerColor,
+  StickerFolder
+} from '@shared/types'
 import { STICKER_COLORS } from '@shared/types'
 import { useDeck } from '../store/useDeck'
 import { useIntent } from '../store/useShell'
 import { useStickers } from '../store/useStickers'
 import { cn } from '../lib/cn'
+import { clampToBoard, findFreeSpot, type Rect } from '../lib/board'
 import { EASE_OUT, SPRING } from '../lib/motion'
 import { paperStyle } from '../lib/stickerColor'
 
@@ -14,20 +25,51 @@ const NOTE_W = 208
 const NOTE_H = 168
 /** Room to drop notes below the fold; the board scrolls. */
 const BOARD_H = 1400
+/** Breathing room at the edges, and between two freshly-placed notes. */
+const PAD = 16
 
 /** Enough tilt to look pinned by hand, never enough to be hard to read. */
 const MAX_TILT = 5
 
+/** The pseudo-folders on the filter strip. Neither is a row in the database. */
+const ALL = '__all'
+const LOOSE = '__loose'
+
 export function Stickers() {
   const stickers = useStickers((s) => s.stickers)
+  const folders = useStickers((s) => s.folders)
   const ready = useStickers((s) => s.ready)
   const error = useStickers((s) => s.error)
   const load = useStickers((s) => s.load)
   const add = useStickers((s) => s.add)
   const dismissError = useStickers((s) => s.dismissError)
 
-  const boardRef = useRef<HTMLDivElement>(null)
   const [composing, setComposing] = useState(false)
+  const [filter, setFilter] = useState<string>(ALL)
+
+  /**
+   * The board's own width, measured.
+   *
+   * Drag constraints are a rectangle in board coordinates, so the right-hand
+   * edge has to be a real number rather than "100%". This is also why the notes
+   * are positioned by transform rather than by `left`/`top`: with the element's
+   * layout origin pinned at the board's origin, its transform *is* its board
+   * coordinate, and one clamp covers both the drop and the constraint.
+   */
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const [boardW, setBoardW] = useState(0)
+
+  useLayoutEffect(() => {
+    const element = surfaceRef.current
+    if (!element) return
+
+    const measure = (): void => setBoardW(element.clientWidth)
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     void load()
@@ -38,29 +80,62 @@ export function Stickers() {
     if (newStickerIntent > 0) setComposing(true)
   }, [newStickerIntent])
 
-  const permanent = stickers.filter((s) => s.kind === 'permanent').length
-  const temp = stickers.length - permanent
+  // A folder that has just been deleted must not leave the board filtered to
+  // nothing with no way back — the strip it was selected from is gone too.
+  useEffect(() => {
+    if (filter === ALL || filter === LOOSE) return
+    if (!folders.some((f) => f.id === filter)) setFilter(ALL)
+  }, [folders, filter])
 
-  async function create(input: Omit<NewSticker, 'x' | 'y' | 'rotation'>) {
-    // Drop new notes in a loose diagonal cascade rather than all at the origin,
-    // so adding three in a row does not bury two of them.
+  const visible = stickers.filter((s) => {
+    if (filter === ALL) return true
+    if (filter === LOOSE) return s.folderId === null
+    return s.folderId === filter
+  })
+
+  const permanent = visible.filter((s) => s.kind === 'permanent').length
+  const temp = visible.length - permanent
+
+  async function create(
+    input: Omit<NewSticker, 'x' | 'y' | 'rotation' | 'folderId'>
+  ): Promise<void> {
+    // Placed against what is *visible*, not against the whole wall: two notes
+    // in different folders never share a screen, so treating a hidden one as an
+    // obstacle would push new notes into empty space for no reason.
+    const taken: Rect[] = visible.map((s) => ({
+      x: s.x,
+      y: s.y,
+      w: NOTE_W,
+      h: NOTE_H
+    }))
+
+    const spot = findFreeSpot(
+      taken,
+      { w: NOTE_W, h: NOTE_H },
+      { w: Math.max(boardW, NOTE_W + PAD * 2), h: BOARD_H },
+      PAD,
+      PAD
+    )
+
     const n = stickers.length
     const created = await add({
       ...input,
-      x: 40 + (n % 5) * 46,
-      y: 40 + (n % 7) * 34,
-      rotation: (n % 2 === 0 ? 1 : -1) * (1.5 + (n % 3))
+      ...spot,
+      rotation: (n % 2 === 0 ? 1 : -1) * (1.5 + (n % 3)),
+      // A note added while a folder is being viewed belongs to that folder.
+      // Anything else means adding to a folder silently files it elsewhere.
+      folderId: filter === ALL || filter === LOOSE ? null : filter
     })
     if (created) setComposing(false)
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-4 px-7 pb-4">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-4 px-7 pb-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-[19px] font-medium tracking-[-0.02em]">Stickers</h1>
           <span className="text-[12.5px] text-ink-faint">
-            {stickers.length === 0
+            {visible.length === 0
               ? 'Notes that do not belong on a timeline'
               : `${permanent} permanent · ${temp} temporary`}
           </span>
@@ -79,6 +154,8 @@ export function Stickers() {
           {composing ? 'Close' : 'New sticker'}
         </button>
       </header>
+
+      <FolderStrip active={filter} onSelect={setFilter} />
 
       <AnimatePresence initial={false}>
         {composing && (
@@ -109,21 +186,20 @@ export function Stickers() {
 
       <SweepBanner />
 
-      <div
-        ref={boardRef}
-        className="relative min-h-0 flex-1 overflow-auto px-7 pb-7"
-      >
+      <div className="relative min-h-0 flex-1 overflow-auto px-7 pb-7">
         {/* The board is a fixed-size positioned surface: notes carry absolute
             coordinates, so it cannot be a flow layout. */}
-        <div className="relative" style={{ height: BOARD_H }}>
-          {ready && stickers.length === 0 && (
+        <div ref={surfaceRef} className="relative" style={{ height: BOARD_H }}>
+          {ready && visible.length === 0 && (
             <motion.p
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.35, ease: EASE_OUT }}
               className="pt-16 text-center text-[13px] leading-relaxed text-ink-faint"
             >
-              Nothing on the wall.
+              {filter === ALL
+                ? 'Nothing on the wall.'
+                : 'Nothing filed here yet.'}
               <br />
               <span className="text-ink-faint/60">
                 Temporary notes clear themselves; permanent ones stay until you
@@ -133,13 +209,178 @@ export function Stickers() {
           )}
 
           <AnimatePresence>
-            {stickers.map((sticker) => (
-              <Note key={sticker.id} sticker={sticker} boardRef={boardRef} />
+            {visible.map((sticker) => (
+              <Note key={sticker.id} sticker={sticker} boardW={boardW} />
             ))}
           </AnimatePresence>
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * The folder filter.
+ *
+ * Grouping is optional and stays that way: "All" is the default and a note
+ * never has to declare a folder to exist. The strip hides itself entirely until
+ * there is at least one folder, so a wall nobody wanted to organise looks
+ * exactly as it did before folders existed.
+ */
+function FolderStrip({
+  active,
+  onSelect
+}: {
+  active: string
+  onSelect(id: string): void
+}) {
+  const folders = useStickers((s) => s.folders)
+  const stickers = useStickers((s) => s.stickers)
+  const addFolder = useStickers((s) => s.addFolder)
+  const removeFolder = useStickers((s) => s.removeFolder)
+
+  const [naming, setNaming] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const loose = stickers.filter((s) => s.folderId === null).length
+
+  async function create(): Promise<void> {
+    const name = draft.trim()
+    if (!name) return
+    const folder = await addFolder({
+      name,
+      color: STICKER_COLORS[folders.length % STICKER_COLORS.length]
+    })
+    setDraft('')
+    setNaming(false)
+    if (folder) onSelect(folder.id)
+  }
+
+  if (folders.length === 0 && !naming) {
+    return (
+      <div className="shrink-0 px-7 pb-3">
+        <button
+          type="button"
+          onClick={() => setNaming(true)}
+          className="text-[11.5px] text-ink-faint/70 transition-colors hover:text-ink-dim"
+        >
+          + Group these into folders
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5 px-7 pb-3">
+      <Chip on={active === ALL} onClick={() => onSelect(ALL)}>
+        All
+        <Count n={stickers.length} />
+      </Chip>
+
+      {loose > 0 && (
+        <Chip on={active === LOOSE} onClick={() => onSelect(LOOSE)}>
+          Unfiled
+          <Count n={loose} />
+        </Chip>
+      )}
+
+      {folders.map((folder) => {
+        const n = stickers.filter((s) => s.folderId === folder.id).length
+        return (
+          <Chip
+            key={folder.id}
+            on={active === folder.id}
+            onClick={() => onSelect(folder.id)}
+          >
+            <span
+              className={cn('size-1.5 rounded-full', paperStyle(folder.color).dot)}
+            />
+            {folder.name}
+            <Count n={n} />
+            {active === folder.id && (
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={`Delete ${folder.name}`}
+                title="Delete this folder — its notes stay on the wall"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void removeFolder(folder.id)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.stopPropagation()
+                  void removeFolder(folder.id)
+                }}
+                className="ml-0.5 text-ink-faint transition-colors hover:text-ink"
+              >
+                ✕
+              </span>
+            )}
+          </Chip>
+        )
+      })}
+
+      {naming ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            if (draft.trim()) void create()
+            else setNaming(false)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void create()
+            if (e.key === 'Escape') {
+              setDraft('')
+              setNaming(false)
+            }
+          }}
+          placeholder="Folder name…"
+          className="w-[132px] rounded-full border border-line bg-canvas/60 px-2.5 py-1 text-[11.5px] outline-none placeholder:text-ink-faint/50"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setNaming(true)}
+          aria-label="New folder"
+          className="rounded-full border border-dashed border-line-soft px-2.5 py-1 text-[11.5px] text-ink-faint transition-colors hover:border-line hover:text-ink-dim"
+        >
+          + Folder
+        </button>
+      )}
+    </div>
+  )
+}
+
+function Count({ n }: { n: number }) {
+  return <span className="tabular-nums text-ink-faint/60">{n}</span>
+}
+
+function Chip({
+  on,
+  onClick,
+  children
+}: {
+  on: boolean
+  onClick(): void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] transition-colors',
+        on
+          ? 'border-line bg-raised text-ink'
+          : 'border-line-soft text-ink-faint hover:border-line hover:text-ink-dim'
+      )}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -196,13 +437,7 @@ function SweepBanner() {
   )
 }
 
-function Note({
-  sticker,
-  boardRef
-}: {
-  sticker: Sticker
-  boardRef: React.RefObject<HTMLDivElement | null>
-}) {
+function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
   const move = useStickers((s) => s.move)
   const patch = useStickers((s) => s.patch)
   const remove = useStickers((s) => s.remove)
@@ -213,10 +448,39 @@ function Note({
   const [draft, setDraft] = useState(sticker.body)
   const draggingRef = useRef(false)
 
-  const attached = sticker.attachedDate ? labelFor(sticker.attachedDate) : null
-  const expires = sticker.expiresAt ? labelFor(sticker.expiresAt) : null
+  /**
+   * Position is a transform, not `left`/`top`.
+   *
+   * Animating `left`/`top` puts a layout pass and a paint on every frame of
+   * every drop, for every note on the wall — the settle was the jerky part, not
+   * the drag. `x`/`y` composite on the GPU and are the same values Motion
+   * writes to while dragging, so there is no handover between "being dragged"
+   * and "settling" at all.
+   */
+  const x = useMotionValue(sticker.x)
+  const y = useMotionValue(sticker.y)
 
-  function commitBody() {
+  // Follow the store when it changes underneath us — an import, an undo, or the
+  // clamp below landing somewhere other than where the finger let go. Skipped
+  // mid-drag, where the finger is the authority.
+  useEffect(() => {
+    if (draggingRef.current) return
+    x.set(sticker.x)
+    y.set(sticker.y)
+  }, [sticker.x, sticker.y, x, y])
+
+  // The right and bottom edges are real numbers rather than a ref to the board,
+  // because a ref constrains to the *scroll viewport* — which is why notes
+  // could be dropped into the strip of board that was scrolled out of view and
+  // then appear to be off-screen.
+  const bounds = {
+    left: 0,
+    top: 0,
+    right: Math.max(0, boardW - NOTE_W),
+    bottom: Math.max(0, BOARD_H - NOTE_H)
+  }
+
+  function commitBody(): void {
     setEditing(false)
     const next = draft.trim()
     if (!next || next === sticker.body) {
@@ -230,54 +494,54 @@ function Note({
     <motion.div
       drag={!editing}
       dragMomentum
-      dragConstraints={boardRef}
-      dragElastic={0.12}
-      whileDrag={reduced ? undefined : { scale: 1.06, rotate: 2.5, zIndex: 50 }}
+      dragConstraints={bounds}
+      // Low, not zero: a little give at the edge tells you the board has one.
+      // The drop clamps regardless, so the elastic overshoot can never persist.
+      dragElastic={0.06}
+      whileDrag={reduced ? undefined : { scale: 1.05, zIndex: 50 }}
       onDragStart={() => {
         draggingRef.current = true
       }}
-      onDragEnd={(_e, info) => {
+      onDragEnd={() => {
         draggingRef.current = false
-        // Motion applies the drag as a transform offset on top of `left`/`top`,
-        // so the new position is where it started plus how far it travelled.
-        void move(
-          sticker.id,
-          sticker.x + info.offset.x,
-          sticker.y + info.offset.y,
-          sticker.rotation
+        // Motion has already written the final transform, so the position is
+        // read off the motion values rather than reconstructed from the drag
+        // offset — which is what used to let a note escape when it started a
+        // drag from a stale `sticker.x`.
+        const landed = clampToBoard(
+          { x: x.get(), y: y.get() },
+          { w: NOTE_W, h: NOTE_H },
+          { w: Math.max(boardW, NOTE_W), h: BOARD_H }
         )
+        void move(sticker.id, landed.x, landed.y, sticker.rotation)
       }}
       // Settling into place is a spring, not a stop — a note dropped on a desk
       // does not arrive rigid.
-      dragTransition={{ bounceStiffness: 420, bounceDamping: 30 }}
+      dragTransition={{ bounceStiffness: 420, bounceDamping: 34 }}
       // Blur gated by hand; the global pass does not cover filters.
       initial={
-        reduced
-          ? { opacity: 0 }
-          : { opacity: 0, scale: 0.9, filter: 'blur(5px)' }
+        reduced ? { opacity: 0 } : { opacity: 0, scale: 0.9, filter: 'blur(5px)' }
       }
       animate={{
         opacity: 1,
         scale: 1,
-        ...(reduced ? {} : { filter: 'blur(0px)' }),
-        left: sticker.x,
-        top: sticker.y,
-        x: 0,
-        y: 0
+        ...(reduced ? {} : { filter: 'blur(0px)' })
       }}
       exit={
-        reduced
-          ? { opacity: 0 }
-          : { opacity: 0, scale: 0.92, filter: 'blur(6px)' }
+        reduced ? { opacity: 0 } : { opacity: 0, scale: 0.92, filter: 'blur(6px)' }
       }
       transition={reduced ? { duration: 0 } : SPRING.soft}
       style={{
+        x,
+        y,
         rotate: Math.max(-MAX_TILT, Math.min(MAX_TILT, sticker.rotation)),
         width: NOTE_W,
         minHeight: NOTE_H
       }}
       className={cn(
-        'group/note absolute flex cursor-grab flex-col rounded-xl border p-3.5 backdrop-blur-sm active:cursor-grabbing',
+        // `left-0 top-0` so the transform above is the note's board coordinate
+        // outright, with nothing to add to it.
+        'group/note absolute left-0 top-0 flex cursor-grab flex-col rounded-xl border p-3.5 backdrop-blur-sm active:cursor-grabbing',
         style.surface,
         style.border,
         style.shadow
@@ -292,6 +556,7 @@ function Note({
         </div>
 
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/note:opacity-100">
+          <FolderSwitch sticker={sticker} />
           <ColorSwitch
             current={sticker.color}
             onPick={(color) => void patch(sticker.id, { color })}
@@ -343,14 +608,113 @@ function Note({
         </button>
       )}
 
+      <NoteFooter sticker={sticker} />
+    </motion.div>
+  )
+}
+
+function NoteFooter({ sticker }: { sticker: Sticker }) {
+  const folders = useStickers((s) => s.folders)
+  const folder = folders.find((f) => f.id === sticker.folderId) ?? null
+
+  const attached = sticker.attachedDate ? labelFor(sticker.attachedDate) : null
+  const expires = sticker.expiresAt ? labelFor(sticker.expiresAt) : null
+
+  if (!attached && !expires && !folder) return null
+
+  return (
+    <div className="mt-2 flex items-center gap-2 border-t border-white/10 pt-1.5 text-[10.5px] text-ink-faint">
+      {folder && (
+        <span className="inline-flex items-center gap-1">
+          <span className={cn('size-1 rounded-full', paperStyle(folder.color).dot)} />
+          {folder.name}
+        </span>
+      )}
       {(attached || expires) && (
-        <div className="mt-2 border-t border-white/10 pt-1.5 text-[10.5px] text-ink-faint">
+        <span className="ml-auto">
           {attached
             ? `on ${attached.weekday.slice(0, 3)} ${attached.month} ${attached.dayNum}`
             : `clears ${expires!.month} ${expires!.dayNum}`}
-        </div>
+        </span>
       )}
-    </motion.div>
+    </div>
+  )
+}
+
+/** Files a note, or takes it back out. Hidden until a folder exists. */
+function FolderSwitch({ sticker }: { sticker: Sticker }) {
+  const folders = useStickers((s) => s.folders)
+  const file = useStickers((s) => s.file)
+  const [open, setOpen] = useState(false)
+
+  if (folders.length === 0) return null
+
+  return (
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label="Move to a folder"
+        title="Move to a folder"
+        className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-black/20 hover:text-ink"
+      >
+        <svg viewBox="0 0 16 16" className="size-3" aria-hidden>
+          <path
+            d="M2 4.5h4l1 1.5h7v6H2z"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.96 }}
+            transition={{ duration: 0.14, ease: EASE_OUT }}
+            className="absolute right-0 top-6 z-[60] flex min-w-[140px] flex-col gap-0.5 rounded-lg border border-line-soft bg-surface p-1 shadow-lg shadow-black/50"
+          >
+            {folders.map((folder: StickerFolder) => (
+              <button
+                key={folder.id}
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  void file(sticker.id, folder.id)
+                }}
+                className={cn(
+                  'flex items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11.5px] transition-colors hover:bg-raised',
+                  sticker.folderId === folder.id ? 'text-ink' : 'text-ink-dim'
+                )}
+              >
+                <span
+                  className={cn('size-1.5 rounded-full', paperStyle(folder.color).dot)}
+                />
+                {folder.name}
+              </button>
+            ))}
+
+            {sticker.folderId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  void file(sticker.id, null)
+                }}
+                className="mt-0.5 border-t border-line-soft px-1.5 pt-1.5 text-left text-[11.5px] text-ink-faint transition-colors hover:text-ink"
+              >
+                Take out of folder
+              </button>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </span>
   )
 }
 
@@ -381,7 +745,7 @@ function Composer({
   onCreate,
   onCancel
 }: {
-  onCreate(input: Omit<NewSticker, 'x' | 'y' | 'rotation'>): void
+  onCreate(input: Omit<NewSticker, 'x' | 'y' | 'rotation' | 'folderId'>): void
   onCancel(): void
 }) {
   const [body, setBody] = useState('')
@@ -390,7 +754,7 @@ function Composer({
   const [mode, setMode] = useState<'expires' | 'attached'>('expires')
   const [date, setDate] = useState(() => addDays(todayKey(), 7))
 
-  function submit() {
+  function submit(): void {
     if (!body.trim()) return
     onCreate({
       body: body.trim(),
@@ -538,4 +902,3 @@ function Pill({
     </button>
   )
 }
-

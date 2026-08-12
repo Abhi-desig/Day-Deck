@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import type { DateKey } from '@shared/date'
-import type { NewSticker, Sticker, StickerPatch } from '@shared/types'
+import type {
+  NewSticker,
+  NewStickerFolder,
+  Sticker,
+  StickerFolder,
+  StickerFolderPatch,
+  StickerPatch
+} from '@shared/types'
 import { api } from '../lib/api'
 
 const message = (err: unknown): string =>
@@ -8,6 +15,7 @@ const message = (err: unknown): string =>
 
 interface StickerState {
   stickers: Sticker[]
+  folders: StickerFolder[]
   ready: boolean
   error: string | null
 
@@ -17,17 +25,32 @@ interface StickerState {
   /** Position only, and only on drop — see the note on `move`. */
   move(id: string, x: number, y: number, rotation: number): Promise<void>
   remove(id: string): Promise<void>
+
+  addFolder(input: NewStickerFolder): Promise<StickerFolder | null>
+  patchFolder(id: string, patch: StickerFolderPatch): Promise<void>
+  removeFolder(id: string): Promise<void>
+  /** null takes the note back out of every folder. */
+  file(id: string, folderId: string | null): Promise<void>
+
   dismissError(): void
 }
 
 export const useStickers = create<StickerState>((set, get) => ({
   stickers: [],
+  folders: [],
   ready: false,
   error: null,
 
   async load() {
     try {
-      set({ stickers: await api.stickers.list(), ready: true, error: null })
+      // Both in one pass: the board cannot render its filter strip before it
+      // knows which folders exist, and two sequential awaits would show a wall
+      // with no strip for a frame.
+      const [stickers, folders] = await Promise.all([
+        api.stickers.list(),
+        api.stickers.folders()
+      ])
+      set({ stickers, folders, ready: true, error: null })
     } catch (err) {
       set({ ready: true, error: message(err) })
     }
@@ -78,6 +101,57 @@ export const useStickers = create<StickerState>((set, get) => ({
     } catch (err) {
       set({ stickers: previous, error: message(err) })
     }
+  },
+
+  async addFolder(input) {
+    try {
+      const folder = await api.stickers.createFolder(input)
+      set((s) => ({ folders: [...s.folders, folder], error: null }))
+      return folder
+    } catch (err) {
+      set({ error: message(err) })
+      return null
+    }
+  },
+
+  async patchFolder(id, patch) {
+    const previous = get().folders
+    set({ folders: previous.map((f) => (f.id === id ? { ...f, ...patch } : f)) })
+    try {
+      const saved = await api.stickers.updateFolder(id, patch)
+      set((s) => ({ folders: s.folders.map((f) => (f.id === id ? saved : f)) }))
+    } catch (err) {
+      set({ folders: previous, error: message(err) })
+    }
+  },
+
+  async removeFolder(id) {
+    const previousFolders = get().folders
+    const previousStickers = get().stickers
+
+    // Main sets the notes loose via ON DELETE SET NULL. Mirroring that here
+    // rather than refetching keeps a note that is on screen from vanishing for
+    // a frame and coming back unfiled.
+    set({
+      folders: previousFolders.filter((f) => f.id !== id),
+      stickers: previousStickers.map((s) =>
+        s.folderId === id ? { ...s, folderId: null } : s
+      )
+    })
+
+    try {
+      await api.stickers.removeFolder(id)
+    } catch (err) {
+      set({
+        folders: previousFolders,
+        stickers: previousStickers,
+        error: message(err)
+      })
+    }
+  },
+
+  async file(id, folderId) {
+    await get().patch(id, { folderId })
   },
 
   dismissError() {

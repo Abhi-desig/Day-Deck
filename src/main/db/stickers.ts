@@ -2,8 +2,11 @@ import { randomUUID } from 'node:crypto'
 import type { DateKey } from '@shared/date'
 import type {
   NewSticker,
+  NewStickerFolder,
   Sticker,
   StickerColor,
+  StickerFolder,
+  StickerFolderPatch,
   StickerPatch
 } from '@shared/types'
 import { STICKER_COLORS } from '@shared/types'
@@ -29,6 +32,7 @@ interface StickerRow {
   y: number
   rotation: number
   created_at: string
+  folder_id: string | null
 }
 
 /**
@@ -49,7 +53,8 @@ const toSticker = (r: StickerRow): Sticker => ({
   x: r.x,
   y: r.y,
   rotation: r.rotation,
-  createdAt: r.created_at
+  createdAt: r.created_at,
+  folderId: r.folder_id ?? null
 })
 
 export function listStickers(db: Db): Sticker[] {
@@ -81,8 +86,9 @@ export function createSticker(db: Db, input: NewSticker): Sticker {
   const id = randomUUID()
   db.prepare(
     `INSERT INTO stickers
-       (id, body, color, kind, expires_at, attached_date, x, y, rotation, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, body, color, kind, expires_at, attached_date, x, y, rotation,
+        created_at, folder_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.body.trim(),
@@ -93,7 +99,8 @@ export function createSticker(db: Db, input: NewSticker): Sticker {
     input.x,
     input.y,
     input.rotation,
-    new Date().toISOString()
+    new Date().toISOString(),
+    input.folderId ?? null
   )
   return getSticker(db, id)
 }
@@ -106,7 +113,8 @@ const PATCH_COLUMNS: Record<keyof StickerPatch, string> = {
   attachedDate: 'attached_date',
   x: 'x',
   y: 'y',
-  rotation: 'rotation'
+  rotation: 'rotation',
+  folderId: 'folder_id'
 }
 
 export function updateSticker(
@@ -169,4 +177,98 @@ export function deleteMany(db: Db, ids: string[]): number {
     for (const id of ids) removed += stmt.run(id).changes
   })()
   return removed
+}
+
+/* ---------------------------------------------------------------- folders */
+
+interface FolderRow {
+  id: string
+  name: string
+  color: string
+  sort_index: number
+  created_at: string
+}
+
+const toFolder = (r: FolderRow): StickerFolder => ({
+  id: r.id,
+  name: r.name,
+  color: isStickerColor(r.color) ? r.color : 'butter',
+  sortIndex: r.sort_index,
+  createdAt: r.created_at
+})
+
+export function listFolders(db: Db): StickerFolder[] {
+  return db
+    .prepare<[], FolderRow>(
+      `SELECT * FROM sticker_folders ORDER BY sort_index ASC, created_at ASC`
+    )
+    .all()
+    .map(toFolder)
+}
+
+export function getFolder(db: Db, id: string): StickerFolder {
+  const row = db
+    .prepare<[string], FolderRow>(`SELECT * FROM sticker_folders WHERE id = ?`)
+    .get(id)
+  if (!row) throw new Error(`Sticker folder not found: ${id}`)
+  return toFolder(row)
+}
+
+export function createFolder(db: Db, input: NewStickerFolder): StickerFolder {
+  const id = randomUUID()
+  const next = db
+    .prepare<[], { next: number }>(
+      `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next FROM sticker_folders`
+    )
+    .get()
+
+  db.prepare(
+    `INSERT INTO sticker_folders (id, name, color, sort_index, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(id, input.name.trim(), input.color, next?.next ?? 0, new Date().toISOString())
+
+  return getFolder(db, id)
+}
+
+const FOLDER_PATCH_COLUMNS: Record<keyof StickerFolderPatch, string> = {
+  name: 'name',
+  color: 'color',
+  sortIndex: 'sort_index'
+}
+
+export function updateFolder(
+  db: Db,
+  id: string,
+  patch: StickerFolderPatch
+): StickerFolder {
+  const sets: string[] = []
+  const values: unknown[] = []
+
+  for (const [key, column] of Object.entries(FOLDER_PATCH_COLUMNS)) {
+    const value = patch[key as keyof StickerFolderPatch]
+    if (value === undefined) continue
+    sets.push(`${column} = ?`)
+    values.push(typeof value === 'string' ? value.trim() : value)
+  }
+
+  if (sets.length) {
+    db.prepare(`UPDATE sticker_folders SET ${sets.join(', ')} WHERE id = ?`).run(
+      ...values,
+      id
+    )
+  }
+
+  return getFolder(db, id)
+}
+
+/**
+ * Deleting a folder releases its notes; it does not shred them.
+ *
+ * The schema does this on its own via `ON DELETE SET NULL`, and it is stated
+ * here as well because "delete the group" reading as "delete the notes" is the
+ * kind of assumption that only gets tested once, by someone with real notes in
+ * it.
+ */
+export function deleteFolder(db: Db, id: string): void {
+  db.prepare(`DELETE FROM sticker_folders WHERE id = ?`).run(id)
 }
