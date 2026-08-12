@@ -51,6 +51,13 @@ export interface Slot {
    * not been broken down yet.
    */
   sourcePoints: string[]
+  /**
+   * Which tags this slot is filed under, denormalised for the same reason as
+   * `sourceLabel`. A second dimension to `category`, not a replacement for it:
+   * every slot still has exactly one category, and may have any number of tags
+   * — including none.
+   */
+  tags: SlotTag[]
 }
 
 export interface NewSlot {
@@ -62,6 +69,11 @@ export interface NewSlot {
   source?: SlotSource
   sourceRef?: string | null
   category?: SlotCategory
+  /**
+   * Slugs the user typed as `#tag`. Attached with origin `typed`, on top of
+   * whatever the keyword rules match on their own.
+   */
+  tagSlugs?: string[]
 }
 
 export type SlotPatch = Partial<
@@ -77,6 +89,84 @@ export type SlotPatch = Partial<
     | 'sortIndex'
   >
 >
+
+/* ------------------------------------------------------------------- tags */
+
+/**
+ * Tag colours.
+ *
+ * Wider than `GOAL_COLORS` because tags are the one thing here the user adds
+ * indefinitely — five would start repeating by the sixth tag, and a segmented
+ * chart whose segments share a colour is worse than no segmentation. Amber is
+ * still first so a single tag looks like the rest of the app.
+ */
+export const TAG_COLORS = [
+  'amber',
+  'violet',
+  'sky',
+  'mint',
+  'rose',
+  'coral',
+  'lime',
+  'cyan'
+] as const
+
+export type TagColor = (typeof TAG_COLORS)[number]
+
+/**
+ * How a tag came to be on a slot — the "derivation" shown beside it.
+ *
+ * Worth storing rather than recomputing: a keyword can be edited or deleted
+ * after the fact, and a slot that says "auto-filed on 'amber'" when the rule
+ * that did it no longer exists is still telling the truth about what happened.
+ */
+export type TagOrigin = 'auto' | 'typed' | 'manual'
+
+export interface Tag {
+  id: string
+  label: string
+  /** Lowercase and space-free — what `#slug` in the quick-add bar matches. */
+  slug: string
+  color: TagColor
+  /**
+   * Lowercased match terms. A new task whose title contains any of them files
+   * itself here without being asked, which is the whole point: typing
+   * "amber automation" should land in the amber box on its own.
+   */
+  keywords: string[]
+  /**
+   * The weekly cutoff, 0 = Sunday … 6 = Saturday. Friday is the default.
+   * null means this tag is not on a deadline and the Tracker stays quiet
+   * about it.
+   */
+  dueWeekday: number | null
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewTag = Omit<Tag, 'id' | 'createdAt' | 'sortIndex' | 'slug'> & {
+  /** Derived from the label when omitted. */
+  slug?: string
+  sortIndex?: number
+}
+
+export type TagPatch = Partial<
+  Pick<Tag, 'label' | 'slug' | 'color' | 'keywords' | 'dueWeekday' | 'sortIndex'>
+>
+
+/**
+ * A tag as it hangs off a slot: enough to render the chip, plus why it is
+ * there.
+ */
+export interface SlotTag {
+  id: string
+  label: string
+  slug: string
+  color: TagColor
+  origin: TagOrigin
+  /** The keyword that matched, when `origin` is 'auto'. Null otherwise. */
+  matched: string | null
+}
 
 export interface DayCard {
   date: DateKey
@@ -311,7 +401,36 @@ export interface Sticker {
   y: number
   rotation: number
   createdAt: string
+  /**
+   * The folder this note is filed under, or null for a loose one.
+   *
+   * Nullable on purpose and forever. Grouping is something you reach for when a
+   * topic has enough notes to be worth separating — forcing every scrap onto
+   * the wall to declare a folder first would turn a scratchpad into filing.
+   */
+  folderId: string | null
 }
+
+/**
+ * A group of stickers on the wall.
+ *
+ * A filter, not a container: the board shows every note by default and folders
+ * narrow it. Deleting one releases its notes back to loose rather than taking
+ * them with it, which is why `stickers.folder_id` is ON DELETE SET NULL.
+ */
+export interface StickerFolder {
+  id: string
+  name: string
+  color: StickerColor
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewStickerFolder = Pick<StickerFolder, 'name' | 'color'>
+
+export type StickerFolderPatch = Partial<
+  Pick<StickerFolder, 'name' | 'color' | 'sortIndex'>
+>
 
 /** Paper colours. Deliberately not the goal palette — a note is not a goal. */
 export const STICKER_COLORS = [
@@ -337,6 +456,7 @@ export type StickerPatch = Partial<
     | 'x'
     | 'y'
     | 'rotation'
+    | 'folderId'
   >
 >
 
@@ -600,6 +720,8 @@ export interface TrackerEntry {
   source: SlotSource
   sourceLabel: string | null
   sourceColor: GoalColor | null
+  /** Carried through so the completions list can show what it was filed under. */
+  tags: SlotTag[]
 }
 
 export interface TrackerDay {
@@ -608,6 +730,49 @@ export interface TrackerDay {
   minutes: Record<SlotCategory, number>
   total: number
   totalMinutes: number
+  /**
+   * The same day counted by tag instead of by category, keyed by tag id.
+   *
+   * A separate map rather than a second `counts` because the two do not add up
+   * to the same number: a slot with two tags is counted under both, and one
+   * with none appears in neither. `untagged` is what the chart uses to keep a
+   * tag-segmented bar the same height as its category-segmented twin.
+   */
+  tagCounts: Record<string, number>
+  tagMinutes: Record<string, number>
+  untagged: number
+  untaggedMinutes: number
+}
+
+/**
+ * One tag's week against its cutoff.
+ *
+ * Counting is deliberately asymmetric with the rest of the Tracker: `done`
+ * buckets on the day work was *finished*, the same as everywhere else, while
+ * `open` buckets on the day it is *planned* for — unfinished work has no
+ * completion date to bucket on, and the only honest question about it is
+ * whether it is scheduled to land before the cutoff.
+ */
+export interface TagDue {
+  tagId: string
+  /** The cutoff itself, resolved into the week being viewed. */
+  dueDate: DateKey
+  done: number
+  doneMinutes: number
+  open: number
+  openMinutes: number
+  /** The open work itself, so the panel can list it and not just count it. */
+  openItems: TagWorkItem[]
+  /** The cutoff has passed and `open` is still not zero. */
+  missed: boolean
+}
+
+export interface TagWorkItem {
+  slotId: string
+  title: string
+  date: DateKey
+  durationMin: number
+  category: SlotCategory
 }
 
 /**
@@ -638,7 +803,77 @@ export interface TrackerWeek {
   /** Everything finished this week, newest day first. */
   entries: TrackerEntry[]
   pace: TrackerPace
+  /** Every tag that exists, so the chart legend is stable across quiet weeks. */
+  tags: Tag[]
+  tagTotals: Record<string, number>
+  tagMinutes: Record<string, number>
+  /** Finished work carrying no tag at all, as its own segment. */
+  untaggedTotal: number
+  untaggedMinutes: number
+  /** One entry per tag that has a cutoff weekday set. */
+  tagDue: TagDue[]
 }
+
+/* ------------------------------------------------------- storyboards */
+
+/**
+ * A board: one segment of the storyboard space.
+ *
+ * Boards are the segmentation. Frames live on an unbounded canvas and are
+ * positioned absolutely, so nothing stops two projects' work from sharing a
+ * surface except the board they are on — which is exactly why switching boards
+ * swaps the whole canvas rather than filtering it.
+ */
+export interface Storyboard {
+  id: string
+  title: string
+  /** The project this board belongs to, when it belongs to one. */
+  projectId: string | null
+  color: GoalColor
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewStoryboard = Pick<Storyboard, 'title'> &
+  Partial<Pick<Storyboard, 'projectId' | 'color'>>
+
+export type StoryboardPatch = Partial<
+  Pick<Storyboard, 'title' | 'projectId' | 'color' | 'sortIndex'>
+>
+
+/**
+ * One frame on a board: what the shot is, and the prompt allocated to it.
+ *
+ * `prompt` is a first-class column rather than part of `description` because it
+ * is the thing that gets copied out and pasted into a generator — a frame's
+ * description is for the human reading the board, its prompt is for the machine
+ * that renders it, and mixing the two means hand-editing every time.
+ */
+export interface StoryFrame {
+  id: string
+  boardId: string
+  title: string
+  description: string
+  prompt: string
+  /** Canvas coordinates in px, from the origin of the board's space. */
+  x: number
+  y: number
+  w: number
+  h: number
+  color: GoalColor
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewStoryFrame = Pick<StoryFrame, 'boardId'> &
+  Partial<Omit<StoryFrame, 'id' | 'boardId' | 'createdAt'>>
+
+export type StoryFramePatch = Partial<
+  Pick<
+    StoryFrame,
+    'title' | 'description' | 'prompt' | 'x' | 'y' | 'w' | 'h' | 'color' | 'sortIndex'
+  >
+>
 
 /* ------------------------------------------------------------- sections */
 
@@ -647,6 +882,7 @@ export const SECTIONS = [
   'projects',
   'goals',
   'tracker',
+  'storyboards',
   'stickers'
 ] as const
 

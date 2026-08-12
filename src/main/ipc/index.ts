@@ -2,7 +2,7 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { app, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { isValidKey, todayKey } from '@shared/date'
 import { IPC } from '@shared/ipc-contract'
-import { GOAL_COLORS, STICKER_COLORS } from '@shared/types'
+import { GOAL_COLORS, STICKER_COLORS, TAG_COLORS } from '@shared/types'
 import type {
   AgentMessage,
   CurriculumInput,
@@ -11,18 +11,29 @@ import type {
   NewGoalNote,
   NewSlot,
   NewSticker,
+  NewStickerFolder,
+  NewStoryboard,
+  NewStoryFrame,
+  NewTag,
   NewWeeklyTemplate,
   NotifyPrefs,
   SlotPatch,
   SlotStatus,
   Sticker,
-  StickerPatch
+  StickerFolderPatch,
+  StickerPatch,
+  StoryboardPatch,
+  StoryFramePatch,
+  TagOrigin,
+  TagPatch
 } from '@shared/types'
 import { dbPath, getDb } from '../db'
 import { MIGRATIONS } from '../db/migrations'
 import * as notes from '../db/notes'
 import * as slots from '../db/slots'
 import * as stickers from '../db/stickers'
+import * as storyboards from '../db/storyboards'
+import * as tags from '../db/tags'
 import * as weekly from '../db/weekly'
 import * as agent from '../services/agent'
 import { exportBackup, importBackup } from '../services/backup'
@@ -361,6 +372,139 @@ export function registerIpc(): void {
     stickers.deleteSticker(getDb(), id)
   })
 
+  ipcMain.handle(IPC.stickerFoldersList, () => stickers.listFolders(getDb()))
+
+  ipcMain.handle(IPC.stickerFoldersCreate, (_e, input: NewStickerFolder) => {
+    validateFolderName(input?.name)
+    if (!(STICKER_COLORS as readonly string[]).includes(input?.color)) {
+      throw new Error(`Unknown folder colour: ${String(input?.color)}`)
+    }
+    return stickers.createFolder(getDb(), input)
+  })
+
+  ipcMain.handle(
+    IPC.stickerFoldersUpdate,
+    (_e, id: unknown, patch: StickerFolderPatch) => {
+      assertId(id, 'folder id')
+      if (patch?.name !== undefined) validateFolderName(patch.name)
+      if (
+        patch?.color !== undefined &&
+        !(STICKER_COLORS as readonly string[]).includes(patch.color)
+      ) {
+        throw new Error(`Unknown folder colour: ${String(patch.color)}`)
+      }
+      return stickers.updateFolder(getDb(), id, patch ?? {})
+    }
+  )
+
+  ipcMain.handle(IPC.stickerFoldersDelete, (_e, id: unknown) => {
+    assertId(id, 'folder id')
+    stickers.deleteFolder(getDb(), id)
+  })
+
+  /* -------------------------------------------------------------- tags */
+
+  ipcMain.handle(IPC.tagsList, () => tags.listTags(getDb()))
+
+  ipcMain.handle(IPC.tagsCreate, (_e, input: NewTag) => {
+    validateTagInput(input)
+    return tags.createTag(getDb(), input)
+  })
+
+  ipcMain.handle(IPC.tagsUpdate, (_e, id: unknown, patch: TagPatch) => {
+    assertId(id, 'tag id')
+    validateTagPatch(patch ?? {})
+    return tags.updateTag(getDb(), id, patch ?? {})
+  })
+
+  ipcMain.handle(IPC.tagsDelete, (_e, id: unknown) => {
+    assertId(id, 'tag id')
+    tags.deleteTag(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.tagsReorder, (_e, orderedIds: unknown) => {
+    if (!Array.isArray(orderedIds)) throw new Error('orderedIds must be an array')
+    const db = getDb()
+    tags.reorderTags(db, orderedIds as string[])
+    return tags.listTags(db)
+  })
+
+  ipcMain.handle(
+    IPC.tagsAttach,
+    (_e, slotId: unknown, tagId: unknown, origin: unknown) => {
+      assertId(slotId, 'slot id')
+      assertId(tagId, 'tag id')
+      // Defaults to `manual`: this channel exists for the picker on a row, and
+      // anything arriving without a stated origin came from a person clicking.
+      const how: TagOrigin =
+        origin === 'auto' || origin === 'typed' ? origin : 'manual'
+      const db = getDb()
+      tags.attachTag(db, slotId, tagId, how)
+      return slots.getSlot(db, slotId)
+    }
+  )
+
+  ipcMain.handle(IPC.tagsDetach, (_e, slotId: unknown, tagId: unknown) => {
+    assertId(slotId, 'slot id')
+    assertId(tagId, 'tag id')
+    const db = getDb()
+    tags.detachTag(db, slotId, tagId)
+    return slots.getSlot(db, slotId)
+  })
+
+  /* ------------------------------------------------------- storyboards */
+
+  ipcMain.handle(IPC.boardsList, () => storyboards.listBoards(getDb()))
+
+  ipcMain.handle(IPC.boardsCreate, (_e, input: NewStoryboard) => {
+    validateBoardTitle(input?.title)
+    if (input?.projectId != null) assertId(input.projectId, 'project id')
+    if (input?.color !== undefined && !(GOAL_COLORS as readonly string[]).includes(input.color)) {
+      throw new Error(`Unknown board colour: ${String(input.color)}`)
+    }
+    return storyboards.createBoard(getDb(), input)
+  })
+
+  ipcMain.handle(IPC.boardsUpdate, (_e, id: unknown, patch: StoryboardPatch) => {
+    assertId(id, 'board id')
+    if (patch?.title !== undefined) validateBoardTitle(patch.title)
+    if (patch?.projectId != null) assertId(patch.projectId, 'project id')
+    if (
+      patch?.color !== undefined &&
+      !(GOAL_COLORS as readonly string[]).includes(patch.color)
+    ) {
+      throw new Error(`Unknown board colour: ${String(patch.color)}`)
+    }
+    return storyboards.updateBoard(getDb(), id, patch ?? {})
+  })
+
+  ipcMain.handle(IPC.boardsDelete, (_e, id: unknown) => {
+    assertId(id, 'board id')
+    storyboards.deleteBoard(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.framesList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return storyboards.listFrames(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.framesCreate, (_e, input: NewStoryFrame) => {
+    assertId(input?.boardId, 'board id')
+    validateFramePatch(input ?? {})
+    return storyboards.createFrame(getDb(), input)
+  })
+
+  ipcMain.handle(IPC.framesUpdate, (_e, id: unknown, patch: StoryFramePatch) => {
+    assertId(id, 'frame id')
+    validateFramePatch(patch ?? {})
+    return storyboards.updateFrame(getDb(), id, patch ?? {})
+  })
+
+  ipcMain.handle(IPC.framesDelete, (_e, id: unknown) => {
+    assertId(id, 'frame id')
+    storyboards.deleteFrame(getDb(), id)
+  })
+
   /* ---------------------------------------------------------- tracker */
 
   ipcMain.handle(IPC.trackerWeek, (_e, anchor: unknown) => {
@@ -478,6 +622,9 @@ function validateStickerPatch(patch: StickerPatch): void {
   }
   if (patch.expiresAt != null) assertKey(patch.expiresAt, 'expiry date')
   if (patch.attachedDate != null) assertKey(patch.attachedDate, 'attached date')
+  // null is the meaningful value here — it is how a note is taken back out of
+  // a folder — so only a non-null id has to look like one.
+  if (patch.folderId != null) assertId(patch.folderId, 'folder id')
 
   for (const axis of ['x', 'y'] as const) {
     const value = patch[axis]
@@ -510,6 +657,117 @@ function validateSticker(input: NewSticker): void {
     throw new Error(
       'A temporary sticker needs either an expiry date or a day to attach to.'
     )
+  }
+}
+
+const MAX_NAME = 60
+
+function validateFolderName(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('Give the folder a name.')
+  }
+  if (value.length > MAX_NAME) {
+    throw new Error(`A folder name has to be under ${MAX_NAME} characters.`)
+  }
+}
+
+function validateBoardTitle(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('Give the board a name.')
+  }
+  if (value.length > MAX_NAME) {
+    throw new Error(`A board name has to be under ${MAX_NAME} characters.`)
+  }
+}
+
+/**
+ * Keywords are the one field here that can quietly break the whole app: a term
+ * that trims to nothing matches every title ever written, so it is rejected at
+ * the boundary as well as filtered in db/tags.
+ */
+function validateKeywords(value: unknown): asserts value is string[] {
+  if (!Array.isArray(value)) throw new Error('Keywords must be a list.')
+  if (value.length > 40) throw new Error('That is too many keywords for one tag.')
+  for (const keyword of value) {
+    if (typeof keyword !== 'string') {
+      throw new Error('Every keyword has to be text.')
+    }
+    if (keyword.length > MAX_NAME) {
+      throw new Error(`A keyword has to be under ${MAX_NAME} characters.`)
+    }
+  }
+}
+
+function validateTagPatch(patch: TagPatch): void {
+  if (patch.label !== undefined) {
+    if (typeof patch.label !== 'string' || !patch.label.trim()) {
+      throw new Error('Give the tag a name.')
+    }
+    if (patch.label.length > MAX_NAME) {
+      throw new Error(`A tag name has to be under ${MAX_NAME} characters.`)
+    }
+  }
+  if (patch.slug !== undefined && typeof patch.slug !== 'string') {
+    throw new Error('A tag slug has to be text.')
+  }
+  if (
+    patch.color !== undefined &&
+    !(TAG_COLORS as readonly string[]).includes(patch.color)
+  ) {
+    throw new Error(`Unknown tag colour: ${String(patch.color)}`)
+  }
+  if (patch.keywords !== undefined) validateKeywords(patch.keywords)
+  // null is not missing: it is how a tag is taken off a deadline.
+  if (patch.dueWeekday !== undefined && patch.dueWeekday !== null) {
+    if (
+      !Number.isInteger(patch.dueWeekday) ||
+      patch.dueWeekday < 0 ||
+      patch.dueWeekday > 6
+    ) {
+      throw new Error('A cutoff day must be a weekday number between 0 and 6.')
+    }
+  }
+}
+
+function validateTagInput(input: NewTag): void {
+  if (!input || typeof input !== 'object') throw new Error('Missing tag')
+  validateTagPatch(input as TagPatch)
+  if (input.label === undefined) throw new Error('Give the tag a name.')
+  if (input.color === undefined) throw new Error('A tag needs a colour.')
+}
+
+/** Canvas coordinates. Same reasoning as the stickers wall's MAX_COORD. */
+const MAX_CANVAS = 200_000
+const MAX_PROMPT = 8_000
+
+function validateFramePatch(patch: StoryFramePatch): void {
+  for (const field of ['title', 'description', 'prompt'] as const) {
+    const value = patch[field]
+    if (value === undefined) continue
+    if (typeof value !== 'string') throw new Error(`A frame ${field} has to be text.`)
+    if (value.length > MAX_PROMPT) {
+      throw new Error(`A frame ${field} has to be under ${MAX_PROMPT} characters.`)
+    }
+  }
+  for (const axis of ['x', 'y'] as const) {
+    const value = patch[axis]
+    if (value === undefined) continue
+    if (!Number.isFinite(value) || Math.abs(value) > MAX_CANVAS) {
+      throw new Error(`Frame ${axis} is out of range.`)
+    }
+  }
+  for (const side of ['w', 'h'] as const) {
+    const value = patch[side]
+    if (value === undefined) continue
+    if (!Number.isFinite(value) || value < 80 || value > 4_000) {
+      throw new Error(`Frame ${side} is out of range.`)
+    }
+  }
+  if (
+    patch.color !== undefined &&
+    !(GOAL_COLORS as readonly string[]).includes(patch.color)
+  ) {
+    throw new Error(`Unknown frame colour: ${String(patch.color)}`)
   }
 }
 

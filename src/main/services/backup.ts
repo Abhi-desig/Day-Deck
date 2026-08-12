@@ -28,10 +28,16 @@ const TABLES = [
   'weekly_templates',
   'weekly_seed_log',
   'notify_log',
+  'sticker_folders',
   'stickers',
   'goal_notes',
-  // Slots last: rolled_from is a self-reference, handled below.
-  'slots'
+  'tags',
+  'storyboards',
+  'storyboard_frames',
+  // Slots second-to-last: rolled_from is a self-reference, handled below.
+  'slots',
+  // And their attachments after them, since slot_tags references both ends.
+  'slot_tags'
 ] as const
 
 export const BACKUP_FORMAT = 1

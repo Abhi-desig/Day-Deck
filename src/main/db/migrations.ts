@@ -204,5 +204,102 @@ export const MIGRATIONS: readonly string[] = [
   -- status follows it — the same shape as the query in db/notes.ts.
   CREATE INDEX idx_goal_notes_surface ON goal_notes(surface_date, status);
   CREATE INDEX idx_goal_notes_goal ON goal_notes(curriculum_id);
+  `,
+
+  /* ------------ v6: tags, sticker folders, and the storyboard space */
+  `
+  -- Tags are a second dimension to slots.category, not a replacement for it.
+  -- Every slot still has exactly one category (the Tracker's three buckets,
+  -- rollover and the notification briefs all depend on that), and may carry any
+  -- number of tags on top — including none.
+  CREATE TABLE tags (
+    id          TEXT PRIMARY KEY,
+    label       TEXT NOT NULL,
+    -- What '#slug' in the quick-add bar matches. Unique so a typed token can
+    -- only ever resolve to one tag.
+    slug        TEXT NOT NULL UNIQUE,
+    color       TEXT NOT NULL DEFAULT 'amber',
+    -- JSON array of lowercased match terms. A column rather than a child table
+    -- for the same reason as topics.points: only ever read with their tag,
+    -- never queried across them, and rewriting the set is one UPDATE.
+    keywords    TEXT NOT NULL DEFAULT '[]',
+    -- Weekly cutoff, 0 = Sunday … 6 = Saturday, matching weekly_templates.
+    -- NULL means this tag is not on a deadline and the Tracker stays quiet.
+    due_weekday INTEGER,
+    sort_index  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+  );
+
+  -- Which slots are filed under which tag.
+  --
+  -- 'origin' and 'matched' record *why* the row is here, and are the reason
+  -- this is a table with columns rather than a plain join. A keyword can be
+  -- edited or deleted long after it filed something; re-deriving the reason at
+  -- read time would then either lose it or invent a new one, where a stored
+  -- "auto-filed on 'amber'" stays true about what actually happened.
+  CREATE TABLE slot_tags (
+    slot_id TEXT NOT NULL REFERENCES slots(id) ON DELETE CASCADE,
+    tag_id  TEXT NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+    origin  TEXT NOT NULL DEFAULT 'auto'
+            CHECK (origin IN ('auto','typed','manual')),
+    matched TEXT,
+    PRIMARY KEY (slot_id, tag_id)
+  );
+  CREATE INDEX idx_slot_tags_tag ON slot_tags(tag_id);
+
+  -- One tag to start with, because the feature is invisible until something is
+  -- in it. Its label alone matches "amber automation" — see shared/tag-match —
+  -- so the keyword list is for the words that are *not* the name.
+  INSERT INTO tags (id, label, slug, color, keywords, due_weekday, sort_index, created_at)
+  VALUES ('seed-tag-amber', 'Amber', 'amber', 'amber',
+          '["amberstudent","amber student"]', 5, 0, datetime('now'));
+
+  -- Optional grouping for the stickers wall. SET NULL rather than CASCADE:
+  -- deleting a folder releases its notes back onto the loose wall, it does not
+  -- shred them.
+  CREATE TABLE sticker_folders (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    color      TEXT NOT NULL DEFAULT 'butter',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  ALTER TABLE stickers ADD COLUMN folder_id TEXT
+    REFERENCES sticker_folders(id) ON DELETE SET NULL;
+  CREATE INDEX idx_stickers_folder ON stickers(folder_id);
+
+  -- The storyboard space. A board is one segment of it; frames live on an
+  -- unbounded canvas inside that board and carry their own coordinates, which
+  -- is why nothing here has an ordering that positions them.
+  CREATE TABLE storyboards (
+    id         TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    -- Nullable: a board can belong to a project, or stand on its own. SET NULL
+    -- so removing a folder from the Projects grid does not delete the thinking
+    -- that was done about it.
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    color      TEXT NOT NULL DEFAULT 'amber',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE storyboard_frames (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    -- The generation prompt allocated to this frame. Its own column because it
+    -- is the thing that gets copied out whole; folded into the description it
+    -- would need hand-editing on every use.
+    prompt      TEXT NOT NULL DEFAULT '',
+    x           REAL NOT NULL DEFAULT 0,
+    y           REAL NOT NULL DEFAULT 0,
+    w           REAL NOT NULL DEFAULT 280,
+    h           REAL NOT NULL DEFAULT 200,
+    color       TEXT NOT NULL DEFAULT 'amber',
+    sort_index  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+  );
+  CREATE INDEX idx_frames_board ON storyboard_frames(board_id);
   `
 ]
