@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type ReactNode, type Ref } from 'react'
 import { AnimatePresence, motion, useReducedMotion, type Variants } from 'motion/react'
 import { EASE_OUT } from '../../lib/motion'
 
@@ -56,19 +56,31 @@ export function TransitionPanel({
 /**
  * Split out so `settled` resets on its own: the panel is keyed by index inside
  * AnimatePresence, so each section change mounts a fresh one.
+ *
+ * `ref` is not decoration. `mode="popLayout"` takes the *outgoing* panel out of
+ * the flex flow by measuring it and pinning it to `position: absolute`, and it
+ * reaches the element by cloning this component with a ref. A function component
+ * that quietly drops that ref never gets measured, so `PopChild` reads a zero
+ * size and skips the pinning entirely — leaving two `h-full` children in one
+ * flex column for the length of the transition. Flexbox shrinks both to half
+ * height and the survivor snaps back when the exit finishes, which is the
+ * vertical judder that looked like a stuck swipe.
  */
 function Panel({
   direction,
-  children
+  children,
+  ref
 }: {
   direction: number
   children: ReactNode
+  ref?: Ref<HTMLDivElement>
 }) {
   const reduced = useReducedMotion()
   const [settled, setSettled] = useState(false)
 
   return (
     <motion.div
+      ref={ref}
       custom={direction}
       // Must be a flex column: every section root sizes itself with `flex-1`,
       // and a plain `h-full` wrapper would collapse them to zero height without
@@ -79,7 +91,12 @@ function Panel({
       animate="center"
       exit="exit"
       transition={{ duration: reduced ? 0 : 0.28, ease: EASE_OUT }}
-      onAnimationComplete={() => setSettled(true)}
+      // Only the arrival latches. This fires for the exit too, and latching
+      // there would pin `filter: none` onto a panel that is in the middle of
+      // blurring out — killing the exit half of the crossfade.
+      onAnimationComplete={(definition) => {
+        if (definition === 'center') setSettled(true)
+      }}
       /*
        * `none`, not the `blur(0px)` the animation lands on. *Any* non-none
        * filter makes an element a backdrop root, and this wrapper contains
