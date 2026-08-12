@@ -7,6 +7,7 @@ import { CATEGORY_LABEL } from '@shared/types'
 import { api } from '../lib/api'
 import { cn } from '../lib/cn'
 import { goalStyle, humanMinutes } from '../lib/goalColor'
+import { derivation, tagStyle, UNTAGGED_BAR, weekdayName } from '../lib/tagColor'
 import { EASE_OUT, SPRING, STAGGER } from '../lib/motion'
 import { NumberTicker } from '../components/magicui/NumberTicker'
 import { AnimatedGroup } from '../components/motion-primitives/AnimatedGroup'
@@ -24,10 +25,78 @@ const CATEGORIES: SlotCategory[] = ['vibe_code', 'amber', 'personal_learning']
 const MIN_BAR_PX = 3
 const CHART_H = 168
 
+/**
+ * What the bars are cut by.
+ *
+ * Two segmentations of the same bars, never two charts. A day's height is its
+ * completion count either way — only the division inside it changes — so
+ * switching is a re-colour rather than a re-measure, and the shape of the week
+ * stays comparable across both.
+ */
+type Segmentation = 'category' | 'tag'
+
+interface Segment {
+  key: string
+  label: string
+  /** A solid fill class. The colour *is* the data here. */
+  className: string
+  value: number
+  minutes: number
+}
+
+/**
+ * One day's bar, cut whichever way is being asked for.
+ *
+ * In tag mode the segment values deliberately do not sum to `day.total`: work
+ * carrying two tags is counted under both. Segments are laid out with
+ * `flexGrow`, which normalises against their own sum, so the bar keeps the
+ * height its count earned and the tags divide it proportionally.
+ */
+function segmentsFor(
+  day: TrackerDay,
+  week: TrackerWeek,
+  mode: Segmentation
+): Segment[] {
+  if (mode === 'category') {
+    return CATEGORIES.filter((c) => day.counts[c] > 0).map((c) => ({
+      key: c,
+      label: CATEGORY_LABEL[c],
+      className: CATEGORY_BAR[c],
+      value: day.counts[c],
+      minutes: day.minutes[c]
+    }))
+  }
+
+  const segments: Segment[] = week.tags
+    .filter((tag) => (day.tagCounts[tag.id] ?? 0) > 0)
+    .map((tag) => ({
+      key: tag.id,
+      label: tag.label,
+      className: tagStyle(tag.color).bar,
+      value: day.tagCounts[tag.id],
+      minutes: day.tagMinutes[tag.id] ?? 0
+    }))
+
+  // Untagged work last and in a neutral grey, so it reads as the remainder
+  // rather than as one more category competing for attention.
+  if (day.untagged > 0) {
+    segments.push({
+      key: '__untagged',
+      label: 'Untagged',
+      className: UNTAGGED_BAR,
+      value: day.untagged,
+      minutes: day.untaggedMinutes
+    })
+  }
+
+  return segments
+}
+
 export function Tracker() {
   const [anchor, setAnchor] = useState<DateKey>(() => todayKey())
   const [week, setWeek] = useState<TrackerWeek | null>(null)
   const [loading, setLoading] = useState(true)
+  const [mode, setMode] = useState<Segmentation>('category')
 
   const load = useCallback(async (at: DateKey) => {
     setLoading(true)
@@ -70,14 +139,19 @@ export function Tracker() {
       {!week ? (
         <p className="py-8 text-[12.5px] text-ink-faint">Loading…</p>
       ) : (
+        // Scrolls as one column rather than giving the completions list its own
+        // scroller: with the cutoff panels in play the page is taller than the
+        // viewport on any week with open work, and a nested scroll area inside
+        // a short page is the worst of both.
         <div
           className={cn(
-            'flex min-h-0 flex-1 flex-col gap-4 transition-opacity duration-150',
+            'flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1 transition-opacity duration-150',
             loading && 'opacity-60'
           )}
         >
           <Summary week={week} />
-          <Chart week={week} />
+          <Chart week={week} mode={mode} onMode={setMode} />
+          <Cutoffs week={week} />
           <Completions week={week} />
         </div>
       )}
@@ -266,7 +340,15 @@ function Stat({
   )
 }
 
-function Chart({ week }: { week: TrackerWeek }) {
+function Chart({
+  week,
+  mode,
+  onMode
+}: {
+  week: TrackerWeek
+  mode: Segmentation
+  onMode(mode: Segmentation): void
+}) {
   const reduced = useReducedMotion()
 
   // Scaled against the busiest day of the week being viewed, so a quiet week
@@ -276,13 +358,60 @@ function Chart({ week }: { week: TrackerWeek }) {
     [week]
   )
 
+  // Only tags that actually appear this week, plus the untagged remainder if
+  // there is one. A legend listing every tag ever created is a wall of zeroes
+  // — the *chart* legend answers "what is in this picture", while the cutoff
+  // panel below is where a tag with nothing in it still has to show up.
+  const legend: Segment[] = useMemo(() => {
+    if (mode === 'category') {
+      return CATEGORIES.map((c) => ({
+        key: c,
+        label: CATEGORY_LABEL[c],
+        className: CATEGORY_BAR[c],
+        value: week.totals[c],
+        minutes: week.minutes[c]
+      }))
+    }
+
+    const items: Segment[] = week.tags
+      .filter((tag) => (week.tagTotals[tag.id] ?? 0) > 0)
+      .map((tag) => ({
+        key: tag.id,
+        label: tag.label,
+        className: tagStyle(tag.color).bar,
+        value: week.tagTotals[tag.id],
+        minutes: week.tagMinutes[tag.id] ?? 0
+      }))
+
+    if (week.untaggedTotal > 0) {
+      items.push({
+        key: '__untagged',
+        label: 'Untagged',
+        className: UNTAGGED_BAR,
+        value: week.untaggedTotal,
+        minutes: week.untaggedMinutes
+      })
+    }
+
+    return items
+  }, [week, mode])
+
   return (
-    <div className="shrink-0 rounded-xl border border-line-soft bg-surface/40 px-5 pb-4 pt-5">
+    <div className="shrink-0 rounded-xl border border-line-soft bg-surface/40 px-5 pb-4 pt-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <span className="text-[11px] uppercase tracking-[0.12em] text-ink-faint">
+          Finished per day
+        </span>
+        <SegmentToggle mode={mode} onMode={onMode} hasTags={week.tags.length > 0} />
+      </div>
+
       <div className="flex items-end gap-2" style={{ height: CHART_H }}>
         {week.days.map((day, i) => (
           <DayBar
             key={day.date}
             day={day}
+            week={week}
+            mode={mode}
             peak={peak}
             index={i}
             reduced={!!reduced}
@@ -290,39 +419,99 @@ function Chart({ week }: { week: TrackerWeek }) {
         ))}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line-soft pt-3">
-        {CATEGORIES.map((category) => (
-          <span
-            key={category}
-            className="flex items-center gap-1.5 text-[11px] text-ink-faint"
-          >
-            <span
-              className={cn('size-2 rounded-[3px]', CATEGORY_BAR[category])}
-            />
-            {CATEGORY_LABEL[category]}
-            <span className="tabular-nums text-ink-faint/60">
-              {humanMinutes(week.minutes[category])}
-            </span>
+      <div className="mt-3 flex min-h-[18px] flex-wrap items-center gap-x-4 gap-y-1 border-t border-line-soft pt-3">
+        {legend.length === 0 ? (
+          <span className="text-[11px] text-ink-faint/60">
+            Nothing finished this week to break down.
           </span>
-        ))}
+        ) : (
+          legend.map((item) => (
+            <span
+              key={item.key}
+              className="flex items-center gap-1.5 text-[11px] text-ink-faint"
+            >
+              <span className={cn('size-2 rounded-[3px]', item.className)} />
+              {item.label}
+              <span className="tabular-nums text-ink-faint/60">
+                {humanMinutes(item.minutes)}
+              </span>
+            </span>
+          ))
+        )}
       </div>
+    </div>
+  )
+}
+
+function SegmentToggle({
+  mode,
+  onMode,
+  hasTags
+}: {
+  mode: Segmentation
+  onMode(mode: Segmentation): void
+  hasTags: boolean
+}) {
+  const options: Array<{ id: Segmentation; label: string }> = [
+    { id: 'category', label: 'Category' },
+    { id: 'tag', label: 'Tag' }
+  ]
+
+  return (
+    <div className="flex items-center gap-0.5 rounded-full border border-line-soft p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          onClick={() => onMode(option.id)}
+          // Nothing to segment by is not the same as a broken button: the tag
+          // view of a database with no tags is an empty chart, so it says so
+          // instead of showing one.
+          disabled={option.id === 'tag' && !hasTags}
+          title={
+            option.id === 'tag' && !hasTags
+              ? 'No tags yet — add one from the Today tab'
+              : undefined
+          }
+          aria-pressed={mode === option.id}
+          className={cn(
+            'relative rounded-full px-2.5 py-1 text-[11px] transition-colors',
+            'disabled:pointer-events-none disabled:opacity-35',
+            mode === option.id ? 'text-ink' : 'text-ink-faint hover:text-ink-dim'
+          )}
+        >
+          {mode === option.id && (
+            <motion.span
+              layoutId="tracker-segmentation"
+              transition={SPRING.snap}
+              className="absolute inset-0 rounded-full bg-raised"
+            />
+          )}
+          <span className="relative">{option.label}</span>
+        </button>
+      ))}
     </div>
   )
 }
 
 function DayBar({
   day,
+  week,
+  mode,
   peak,
   index,
   reduced
 }: {
   day: TrackerDay
+  week: TrackerWeek
+  mode: Segmentation
   peak: number
   index: number
   reduced: boolean
 }) {
   const label = labelFor(day.date)
   const height = (day.total / peak) * (CHART_H - 34)
+  const segments = segmentsFor(day, week, mode)
 
   // Staggered by weekday so the week draws itself left to right — the reason
   // the delay is on the index and not on a list position.
@@ -344,18 +533,21 @@ function DayBar({
               : `${day.total} finished · ${humanMinutes(day.totalMinutes)}`
           }
         >
-          {day.total === 0 ? (
+          {segments.length === 0 ? (
             <div className="h-full w-full rounded-md bg-line-soft" />
           ) : (
-            CATEGORIES.map((category) =>
-              day.counts[category] > 0 ? (
-                <div
-                  key={category}
-                  className={cn('w-full', CATEGORY_BAR[category])}
-                  style={{ flexGrow: day.counts[category] }}
-                />
-              ) : null
-            )
+            segments.map((segment) => (
+              <motion.div
+                key={segment.key}
+                // `layout` so re-cutting the same bar animates the boundaries
+                // moving rather than cutting to a new arrangement.
+                layout={!reduced}
+                transition={reduced ? { duration: 0 } : SPRING.soft}
+                className={cn('w-full', segment.className)}
+                style={{ flexGrow: segment.value }}
+                title={`${segment.label} · ${segment.value} · ${humanMinutes(segment.minutes)}`}
+              />
+            ))
           )}
         </motion.div>
       </div>
@@ -382,6 +574,115 @@ function DayBar({
   )
 }
 
+/**
+ * Each tag against its own weekly cutoff.
+ *
+ * The one place in the Tracker that looks at unfinished work. Everywhere else
+ * is a record of what happened; this answers "will it be done by Friday", which
+ * cannot be said without counting what is still open.
+ */
+function Cutoffs({ week }: { week: TrackerWeek }) {
+  const byId = useMemo(
+    () => new Map(week.tags.map((t) => [t.id, t])),
+    [week.tags]
+  )
+
+  if (week.tagDue.length === 0) return null
+
+  return (
+    <div className="shrink-0 space-y-2">
+      {week.tagDue.map((due) => {
+        const tag = byId.get(due.tagId)
+        if (!tag) return null
+
+        const style = tagStyle(tag.color)
+        const label = labelFor(due.dueDate)
+        const clear = due.open === 0
+
+        return (
+          <div
+            key={due.tagId}
+            className={cn(
+              'rounded-xl border bg-surface/40 px-4 py-3',
+              due.missed ? 'border-amber/35 bg-amber/5' : 'border-line-soft'
+            )}
+          >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <span className="flex items-center gap-1.5">
+                <span className={cn('size-2 rounded-full', style.dot)} />
+                <span className={cn('text-[13px]', style.text)}>{tag.label}</span>
+              </span>
+
+              <span className="text-[11.5px] text-ink-faint">
+                by {weekdayName(tag.dueWeekday ?? 5)} EOD · {label.month}{' '}
+                {label.dayNum}
+              </span>
+
+              <span className="flex-1" />
+
+              <span className="text-[12px] tabular-nums text-ink-dim">
+                <span className="text-ink">{due.done}</span> done
+                {due.doneMinutes > 0 && (
+                  <span className="text-ink-faint">
+                    {' '}
+                    · {humanMinutes(due.doneMinutes)}
+                  </span>
+                )}
+              </span>
+
+              <span
+                className={cn(
+                  'rounded-full border px-2 py-px text-[11px]',
+                  clear
+                    ? 'border-cat-learn/35 bg-cat-learn/10 text-cat-learn'
+                    : due.missed
+                      ? 'border-amber/40 bg-amber/12 text-amber-soft'
+                      : 'border-line-soft text-ink-dim'
+                )}
+              >
+                {clear
+                  ? due.missed
+                    ? 'cleared'
+                    : 'nothing left'
+                  : due.missed
+                    ? `${due.open} missed the cutoff`
+                    : `${due.open} still to do`}
+              </span>
+            </div>
+
+            {due.open > 0 && (
+              <ul className="mt-2 space-y-1 border-t border-line-soft pt-2">
+                {due.openItems.map((item) => {
+                  const on = labelFor(item.date)
+                  return (
+                    <li
+                      key={item.slotId}
+                      className="flex items-baseline gap-2 text-[12.5px]"
+                    >
+                      <span
+                        className={cn(
+                          'mt-1.5 size-1.5 shrink-0 rounded-full',
+                          CATEGORY_BAR[item.category]
+                        )}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-ink-dim">
+                        {item.title}
+                      </span>
+                      <span className="shrink-0 text-[11px] tabular-nums text-ink-faint/70">
+                        {on.weekday.slice(0, 3)} · {item.durationMin}m
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function Completions({ week }: { week: TrackerWeek }) {
   // Newest first, which is the order the query already returns.
   const byDay = useMemo(() => {
@@ -395,7 +696,7 @@ function Completions({ week }: { week: TrackerWeek }) {
   }, [week])
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-line-soft bg-surface/40">
+    <div className="shrink-0 rounded-xl border border-line-soft bg-surface/40">
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={week.weekStart}
@@ -459,6 +760,23 @@ function Completions({ week }: { week: TrackerWeek }) {
                               {entry.sourceLabel}
                             </span>
                           )}
+
+                          {/* The derivation rides along on the title attribute
+                              so the diary can answer "why is this in the amber
+                              box" without a second click. */}
+                          {entry.tags.map((tag) => (
+                            <span
+                              key={tag.id}
+                              className={cn(
+                                'shrink-0 rounded-full border px-1.5 py-px text-[10px]',
+                                tagStyle(tag.color).border,
+                                tagStyle(tag.color).text
+                              )}
+                              title={`${tag.label} — ${derivation(tag.origin, tag.matched)}`}
+                            >
+                              {tag.label}
+                            </span>
+                          ))}
 
                           <span className="shrink-0 text-[10.5px] tabular-nums text-ink-faint/60">
                             {entry.durationMin}m
