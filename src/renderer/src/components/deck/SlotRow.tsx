@@ -5,6 +5,8 @@ import type { Slot, SlotCategory } from '@shared/types'
 import { EASE_OUT, SPRING } from '../../lib/motion'
 import { cn } from '../../lib/cn'
 import { goalStyle } from '../../lib/goalColor'
+import { derivation, tagStyle } from '../../lib/tagColor'
+import { useTags } from '../../store/useTags'
 // Jumping to a workspace is app-level navigation, not something the day card
 // knows about — so it goes to the store directly rather than being threaded up
 // through DayDeck as a callback that every other slot type would ignore.
@@ -205,6 +207,8 @@ export function SlotRow({
 
           {tombstoned && <span className="italic">moved forward</span>}
 
+          {!tombstoned && <TagChips slot={slot} />}
+
           {points.length > 0 && (
             <button
               type="button"
@@ -307,5 +311,109 @@ export function SlotRow({
         </button>
       )}
     </motion.div>
+  )
+}
+
+/**
+ * The tags on a row, plus the way to change them.
+ *
+ * Each chip states its own derivation on hover — "matched 'amber'" versus
+ * "added by hand" — because a tag that appeared without being asked for needs
+ * to be able to explain itself, or automatic filing reads as the app guessing.
+ * Clicking a chip removes that tag outright, including one the keyword rules
+ * put there: the rules are a default, not a verdict.
+ */
+function TagChips({ slot }: { slot: Slot }) {
+  const all = useTags((s) => s.tags)
+  const attach = useTags((s) => s.attach)
+  const detach = useTags((s) => s.detach)
+  const [picking, setPicking] = useState(false)
+
+  const attached = new Set(slot.tags.map((t) => t.id))
+  const available = all.filter((t) => !attached.has(t.id))
+
+  return (
+    <>
+      <AnimatePresence initial={false} mode="popLayout">
+        {slot.tags.map((tag) => (
+          <motion.button
+            key={tag.id}
+            layout
+            type="button"
+            data-no-drag
+            initial={{ opacity: 0, scale: 0.85 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.85 }}
+            transition={{ duration: 0.16, ease: EASE_OUT }}
+            onClick={() => void detach(slot.id, tag.id, slot.date)}
+            title={`${tag.label} — ${derivation(tag.origin, tag.matched)}. Click to remove.`}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full border px-1.5 py-px text-[10px]',
+              'transition-colors hover:bg-white/8',
+              tagStyle(tag.color).border,
+              tagStyle(tag.color).text
+            )}
+          >
+            <span className={cn('size-1 rounded-full', tagStyle(tag.color).dot)} />
+            {tag.label}
+          </motion.button>
+        ))}
+      </AnimatePresence>
+
+      {available.length > 0 && (
+        <span className="relative inline-flex">
+          <button
+            type="button"
+            data-no-drag
+            onClick={() => setPicking((v) => !v)}
+            aria-expanded={picking}
+            aria-label="Add a tag"
+            className={cn(
+              'grid size-4 place-items-center rounded-full border border-line-soft text-[10px]',
+              'opacity-0 transition-all duration-150 group-hover/slot:opacity-100',
+              'hover:border-line hover:text-ink',
+              picking && 'opacity-100 text-ink'
+            )}
+          >
+            +
+          </button>
+
+          <AnimatePresence>
+            {picking && (
+              <motion.div
+                initial={{ opacity: 0, y: -4, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -4, scale: 0.96 }}
+                transition={{ duration: 0.14, ease: EASE_OUT }}
+                // Above the card's own stacking, or the menu opens behind the
+                // next row down.
+                className={cn(
+                  'absolute left-0 top-5 z-50 flex min-w-[130px] flex-col gap-0.5',
+                  'rounded-lg border border-line-soft bg-surface p-1 shadow-lg shadow-black/50'
+                )}
+              >
+                {available.map((tag) => (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    data-no-drag
+                    onClick={() => {
+                      setPicking(false)
+                      void attach(slot.id, tag.id, slot.date)
+                    }}
+                    className="flex items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11.5px] text-ink-dim transition-colors hover:bg-raised hover:text-ink"
+                  >
+                    <span
+                      className={cn('size-1.5 rounded-full', tagStyle(tag.color).dot)}
+                    />
+                    {tag.label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </span>
+      )}
+    </>
   )
 }

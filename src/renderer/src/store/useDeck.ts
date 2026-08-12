@@ -43,6 +43,12 @@ interface DeckState {
   acknowledgeSweep(): void
   /** Re-read the loaded window — used after a curriculum plan rewrites slots. */
   reloadAll(): Promise<void>
+  /**
+   * Re-read one day. Exposed for mutations that live outside this store — a tag
+   * attached from a slot row changes that row without going through any of the
+   * slot actions above.
+   */
+  refreshDay(date: DateKey): Promise<void>
 }
 
 /**
@@ -196,7 +202,9 @@ export const useDeck = create<DeckState>((set, get) => {
     async reloadAll() {
       const { focused } = get()
       await load(addDays(focused, -WINDOW), addDays(focused, WINDOW))
-    }
+    },
+
+    refreshDay: refresh
   }
 })
 

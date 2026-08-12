@@ -10,6 +10,7 @@ import type {
 } from '@shared/types'
 import { GOAL_COLORS } from '@shared/types'
 import type { Db } from './index'
+import { autoTagSlots } from './tags'
 
 interface CurriculumRow {
   id: string
@@ -326,6 +327,7 @@ export function applyAssignments(
  */
 export function materialise(db: Db, curriculumId: string): number {
   let created = 0
+  const createdIds: string[] = []
 
   db.transaction(() => {
     db.prepare(
@@ -374,8 +376,9 @@ export function materialise(db: Db, curriculumId: string): number {
     const now = new Date().toISOString()
 
     for (const t of pending) {
+      const id = randomUUID()
       const info = insert.run(
-        randomUUID(),
+        id,
         t.assigned_date,
         t.est_minutes,
         t.title,
@@ -384,9 +387,17 @@ export function materialise(db: Db, curriculumId: string): number {
         t.seq,
         now
       )
-      if (info.changes > 0) created++
+      if (info.changes > 0) {
+        created++
+        createdIds.push(id)
+      }
     }
   })()
+
+  // Topic titles go through the keyword rules like anything else, so a goal
+  // about amber work lands in the amber box without being tagged by hand. Run
+  // after the transaction commits, when the ids are real.
+  autoTagSlots(db, createdIds)
 
   return created
 }

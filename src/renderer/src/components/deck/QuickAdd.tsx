@@ -1,11 +1,14 @@
-import { useState, type FormEvent } from 'react'
-import { motion } from 'motion/react'
+import { useMemo, useState, type FormEvent } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import type { DateKey } from '@shared/date'
 import type { NewSlot, SlotCategory } from '@shared/types'
 import { CATEGORY_LABEL } from '@shared/types'
+import { slugify } from '@shared/tag-match'
 import { cn } from '../../lib/cn'
-import { SPRING } from '../../lib/motion'
+import { EASE_OUT, SPRING } from '../../lib/motion'
 import { parseQuickAdd } from '../../lib/quickadd'
+import { tagStyle } from '../../lib/tagColor'
+import { previewTags, useTags } from '../../store/useTags'
 
 const CATEGORIES: SlotCategory[] = ['personal_learning', 'vibe_code', 'amber']
 
@@ -24,16 +27,37 @@ export function QuickAdd({ date, onAdd }: QuickAddProps) {
   const [value, setValue] = useState('')
   const [category, setCategory] = useState<SlotCategory>('personal_learning')
   const [busy, setBusy] = useState(false)
+  const tags = useTags((s) => s.tags)
+
+  /**
+   * What this line will be filed under if submitted as it stands.
+   *
+   * Shown while typing rather than after the fact, because auto-filing that
+   * only reveals itself once the task is on the card reads as the app moving
+   * things around behind your back. The keyword matches and the `#tag` tokens
+   * are merged here so both routes look identical on the way in.
+   */
+  const willTag = useMemo(() => {
+    const { title, tagSlugs } = parseQuickAdd(value)
+    const matched = previewTags(title, tags)
+    const seen = new Set(matched.map((t) => t.id))
+
+    const typed = tagSlugs
+      .map((slug) => tags.find((t) => t.slug === slugify(slug)))
+      .filter((t): t is (typeof tags)[number] => !!t && !seen.has(t.id))
+
+    return [...matched, ...typed]
+  }, [value, tags])
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    const { title, startMin, durationMin } = parseQuickAdd(value)
+    const { title, startMin, durationMin, tagSlugs } = parseQuickAdd(value)
     if (!title || busy) return
 
     setBusy(true)
     setValue('')
     try {
-      await onAdd({ date, title, startMin, durationMin, category })
+      await onAdd({ date, title, startMin, durationMin, category, tagSlugs })
     } finally {
       setBusy(false)
     }
@@ -43,7 +67,7 @@ export function QuickAdd({ date, onAdd }: QuickAddProps) {
     <form
       onSubmit={submit}
       data-no-drag
-      className="flex items-center gap-2 border-t border-line-soft px-4 py-3"
+      className="flex flex-wrap items-center gap-2 border-t border-line-soft px-4 py-3"
     >
       <div className="flex items-center gap-1">
         {CATEGORIES.map((c) => (
@@ -84,6 +108,31 @@ export function QuickAdd({ date, onAdd }: QuickAddProps) {
           'placeholder:text-ink-faint/70'
         )}
       />
+
+      <div className="flex shrink-0 items-center gap-1">
+        <AnimatePresence initial={false} mode="popLayout">
+          {willTag.map((tag) => (
+            <motion.span
+              key={tag.id}
+              layout
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              transition={{ duration: 0.16, ease: EASE_OUT }}
+              title={`Will be filed under ${tag.label}`}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-full border px-1.5 py-px text-[10px]',
+                tagStyle(tag.color).border,
+                tagStyle(tag.color).text,
+                tagStyle(tag.color).soft
+              )}
+            >
+              <span className={cn('size-1 rounded-full', tagStyle(tag.color).dot)} />
+              {tag.label}
+            </motion.span>
+          ))}
+        </AnimatePresence>
+      </div>
 
       <motion.button
         type="submit"

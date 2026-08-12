@@ -6,11 +6,19 @@ import type {
   NewSlot,
   Slot,
   SlotPatch,
-  SlotStatus
+  SlotStatus,
+  SlotTag
 } from '@shared/types'
 import type { Db } from './index'
 import { parsePoints, syncTopicStatus } from './curriculum'
 import { listInRange as listNotesInRange } from './notes'
+import {
+  attachTag,
+  resolveSlugs,
+  syncAutoTags,
+  tagsForRange,
+  tagsForSlot
+} from './tags'
 
 export interface SlotRow {
   id: string
@@ -35,7 +43,12 @@ export interface SlotRow {
   source_points?: string | null
 }
 
-export function toSlot(r: SlotRow): Slot {
+/**
+ * `tags` is passed in rather than read here: every caller already knows which
+ * slots it is about to map, so they are fetched once for the whole set instead
+ * of once per row.
+ */
+export function toSlot(r: SlotRow, tags: SlotTag[] = []): Slot {
   return {
     id: r.id,
     date: r.date,
@@ -54,7 +67,8 @@ export function toSlot(r: SlotRow): Slot {
     createdAt: r.created_at,
     sourceLabel: r.source_label ?? null,
     sourceColor: (r.source_color as Slot['sourceColor']) ?? null,
-    sourcePoints: parsePoints(r.source_points ?? null)
+    sourcePoints: parsePoints(r.source_points ?? null),
+    tags
   }
 }
 
@@ -101,11 +115,17 @@ export function listRange(db: Db, from: DateKey, to: DateKey): DayCard[] {
     )
     .all(from, to)
 
+  // One statement for the whole window, not one per row — a swipe reads five
+  // days of cards and a per-slot lookup would be dozens of round trips into
+  // SQLite for what is a single join.
+  const tagsBySlot = tagsForRange(db, from, to)
+
   const byDate = new Map<DateKey, Slot[]>()
   for (const row of rows) {
+    const slot = toSlot(row, tagsBySlot.get(row.id) ?? [])
     const list = byDate.get(row.date)
-    if (list) list.push(toSlot(row))
-    else byDate.set(row.date, [toSlot(row)])
+    if (list) list.push(slot)
+    else byDate.set(row.date, [slot])
   }
 
   const notesByDate = listNotesInRange(db, from, to)
@@ -124,7 +144,7 @@ export function getSlot(db: Db, id: string): Slot {
     .prepare<[string], SlotRow>(`${WITH_GOAL} WHERE s.id = ?`)
     .get(id)
   if (!row) throw new Error(`Slot not found: ${id}`)
-  return toSlot(row)
+  return toSlot(row, tagsForSlot(db, id))
 }
 
 function nextSortIndex(db: Db, date: DateKey): number {
@@ -156,6 +176,16 @@ export function createSlot(db: Db, input: NewSlot): Slot {
     nextSortIndex(db, input.date),
     new Date().toISOString()
   )
+
+  // Filing happens on the way in, so nothing downstream has to remember to do
+  // it. Keyword rules first, then the tags the user typed as `#slug` — that
+  // order matters, because `attachTag` lets a typed attachment upgrade an auto
+  // one but never the reverse.
+  syncAutoTags(db, id, input.title)
+  for (const tag of resolveSlugs(db, input.tagSlugs ?? [])) {
+    attachTag(db, id, tag.id, 'typed')
+  }
+
   return getSlot(db, id)
 }
 
@@ -192,6 +222,11 @@ export function updateSlot(db: Db, id: string, patch: SlotPatch): Slot {
       id
     )
   }
+
+  // A renamed task is a different task as far as the rules are concerned, so
+  // the keyword pass runs again. Only the rows it put there itself are at risk
+  // — see the invariant at the top of db/tags.ts.
+  if (patch.title !== undefined) syncAutoTags(db, id, patch.title)
 
   const slot = getSlot(db, id)
 

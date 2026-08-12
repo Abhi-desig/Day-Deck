@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { DateKey } from '@shared/date'
 import { addDays, weekKey } from '@shared/date'
 import type { Db } from '../db'
+import { autoTagSlots } from '../db/tags'
 import { listTemplates } from '../db/weekly'
 
 export interface SeedResult {
@@ -66,6 +67,10 @@ export function runWeeklySeeding(db: Db, today: DateKey): SeedResult {
       `INSERT INTO weekly_seed_log (week_key, seeded_at) VALUES (?, ?)`
     ).run(week, now)
   })()
+
+  // Seeded work files itself like anything else. Outside the transaction above
+  // because the ids are only known once it has committed.
+  autoTagSlots(db, slotIds)
 
   return { week, slotIds }
 }

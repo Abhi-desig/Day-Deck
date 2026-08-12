@@ -1,7 +1,17 @@
 import type { DateKey } from '@shared/date'
-import { addDays, rangeKeys, startOfWeek, todayKey, toKey } from '@shared/date'
+import {
+  addDays,
+  rangeKeys,
+  startOfWeek,
+  todayKey,
+  toKey,
+  weekdayOf
+} from '@shared/date'
 import type {
   SlotCategory,
+  Tag,
+  TagDue,
+  TagWorkItem,
   TrackerDay,
   TrackerEntry,
   TrackerPace,
@@ -9,6 +19,7 @@ import type {
 } from '@shared/types'
 import type { Db } from '../db'
 import { toSlot, type SlotRow } from '../db/slots'
+import { listTags, tagsForCompleted } from '../db/tags'
 
 /**
  * The Tracker is a read, not a record.
@@ -37,6 +48,9 @@ const zeroed = (): Record<SlotCategory, number> => ({
  * filtered out below.
  */
 function readCompleted(db: Db, from: DateKey, to: DateKey): TrackerEntry[] {
+  const fromInstant = `${addDays(from, -1)}T00:00:00.000Z`
+  const toInstant = `${addDays(to, 2)}T00:00:00.000Z`
+
   const rows = db
     .prepare<[string, string], SlotRow>(
       `SELECT s.*,
@@ -56,7 +70,11 @@ function readCompleted(db: Db, from: DateKey, to: DateKey): TrackerEntry[] {
     )
     // String comparison on ISO instants is chronological, which is the whole
     // reason completed_at is stored as one.
-    .all(`${addDays(from, -1)}T00:00:00.000Z`, `${addDays(to, 2)}T00:00:00.000Z`)
+    .all(fromInstant, toInstant)
+
+  // Same padded window as the rows themselves, so the join is one statement
+  // rather than one per completion.
+  const tagsBySlot = tagsForCompleted(db, fromInstant, toInstant)
 
   const entries: TrackerEntry[] = []
   for (const row of rows) {
@@ -64,7 +82,7 @@ function readCompleted(db: Db, from: DateKey, to: DateKey): TrackerEntry[] {
     const doneOn = toKey(new Date(row.completed_at))
     if (doneOn < from || doneOn > to) continue
 
-    const slot = toSlot(row)
+    const slot = toSlot(row, tagsBySlot.get(row.id) ?? [])
     entries.push({
       slotId: slot.id,
       title: slot.title,
@@ -73,10 +91,109 @@ function readCompleted(db: Db, from: DateKey, to: DateKey): TrackerEntry[] {
       durationMin: slot.durationMin,
       source: slot.source,
       sourceLabel: slot.sourceLabel,
-      sourceColor: slot.sourceColor
+      sourceColor: slot.sourceColor,
+      tags: slot.tags
     })
   }
   return entries
+}
+
+/**
+ * Where a tag's cutoff weekday falls inside the week being viewed.
+ *
+ * `weekStart` is a Monday, so the offset is measured from 1 rather than 0 and a
+ * Sunday cutoff (weekday 0) correctly lands at the *end* of the week rather
+ * than before its beginning.
+ */
+function cutoffDate(weekStart: DateKey, dueWeekday: number): DateKey {
+  return addDays(weekStart, (dueWeekday - weekdayOf(weekStart) + 7) % 7)
+}
+
+/**
+ * Work still open under a tag, on or before a cutoff.
+ *
+ * Bucketed on the *planned* date, not on completion — an unfinished task has no
+ * completion date, and the only meaningful question about it is whether it is
+ * scheduled to land before the deadline. `rolled` rows are excluded: they are
+ * tombstones whose live copy is already counted somewhere else, so including
+ * them would double every carried task.
+ */
+function openForTag(
+  db: Db,
+  tagId: string,
+  from: DateKey,
+  through: DateKey
+): TagWorkItem[] {
+  return db
+    .prepare<[string, string, string], {
+      id: string
+      title: string
+      date: string
+      duration_min: number
+      category: string
+    }>(
+      `SELECT s.id, s.title, s.date, s.duration_min, s.category
+         FROM slots s
+         JOIN slot_tags st ON st.slot_id = s.id
+        WHERE st.tag_id = ?
+          AND s.status = 'open'
+          AND s.date BETWEEN ? AND ?
+        ORDER BY s.date ASC, s.start_min IS NULL DESC, s.start_min ASC`
+    )
+    .all(tagId, from, through)
+    .map((r) => ({
+      slotId: r.id,
+      title: r.title,
+      date: r.date,
+      durationMin: r.duration_min,
+      category: r.category as SlotCategory
+    }))
+}
+
+/**
+ * Each tag's week against its own cutoff. Tags with no cutoff set are absent
+ * entirely rather than present with a null date — the Tracker's rule is that a
+ * deadline you did not ask for is not a deadline you get nagged about.
+ */
+function dueForTags(
+  db: Db,
+  tags: Tag[],
+  entries: TrackerEntry[],
+  weekStart: DateKey,
+  today: DateKey
+): TagDue[] {
+  const out: TagDue[] = []
+
+  for (const tag of tags) {
+    if (tag.dueWeekday === null) continue
+
+    const dueDate = cutoffDate(weekStart, tag.dueWeekday)
+
+    let done = 0
+    let doneMinutes = 0
+    for (const entry of entries) {
+      if (entry.doneOn > dueDate) continue
+      if (!entry.tags.some((t) => t.id === tag.id)) continue
+      done += 1
+      doneMinutes += entry.durationMin
+    }
+
+    const openItems = openForTag(db, tag.id, weekStart, dueDate)
+    const openMinutes = openItems.reduce((n, i) => n + i.durationMin, 0)
+
+    out.push({
+      tagId: tag.id,
+      dueDate,
+      done,
+      doneMinutes,
+      open: openItems.length,
+      openMinutes,
+      openItems,
+      missed: today > dueDate && openItems.length > 0
+    })
+  }
+
+  return out
 }
 
 /**
@@ -133,6 +250,11 @@ export function week(db: Db, anchor: DateKey = todayKey()): TrackerWeek {
   const totals = zeroed()
   const minutes = zeroed()
 
+  const tagTotals: Record<string, number> = {}
+  const tagMinutes: Record<string, number> = {}
+  let untaggedTotal = 0
+  let untaggedMinutes = 0
+
   // Every weekday gets a bar, empty or not — a week with a blank Wednesday has
   // to read as a blank Wednesday, not as a six-day week.
   const days: TrackerDay[] = rangeKeys(weekStart, weekEnd).map((date) => {
@@ -141,7 +263,11 @@ export function week(db: Db, anchor: DateKey = todayKey()): TrackerWeek {
       counts: zeroed(),
       minutes: zeroed(),
       total: 0,
-      totalMinutes: 0
+      totalMinutes: 0,
+      tagCounts: {},
+      tagMinutes: {},
+      untagged: 0,
+      untaggedMinutes: 0
     }
 
     for (const entry of byDate.get(date) ?? []) {
@@ -151,10 +277,35 @@ export function week(db: Db, anchor: DateKey = todayKey()): TrackerWeek {
       day.totalMinutes += entry.durationMin
       totals[entry.category] += 1
       minutes[entry.category] += entry.durationMin
+
+      // A slot with two tags counts under both, so these deliberately do not
+      // sum to `total`. The chart divides each bar proportionally rather than
+      // treating the tag counts as a partition of it — see the note on
+      // TrackerDay.tagCounts.
+      if (entry.tags.length === 0) {
+        day.untagged += 1
+        day.untaggedMinutes += entry.durationMin
+        untaggedTotal += 1
+        untaggedMinutes += entry.durationMin
+      } else {
+        for (const tag of entry.tags) {
+          day.tagCounts[tag.id] = (day.tagCounts[tag.id] ?? 0) + 1
+          day.tagMinutes[tag.id] =
+            (day.tagMinutes[tag.id] ?? 0) + entry.durationMin
+          tagTotals[tag.id] = (tagTotals[tag.id] ?? 0) + 1
+          tagMinutes[tag.id] = (tagMinutes[tag.id] ?? 0) + entry.durationMin
+        }
+      }
     }
 
     return day
   })
+
+  // Every tag, not just the ones with work in this week: a legend that changes
+  // shape as you page back through quiet weeks is unreadable, and a tag showing
+  // zero is itself the answer to "did I touch this at all".
+  const tags = listTags(db)
+  const today = todayKey()
 
   return {
     weekStart,
@@ -164,6 +315,12 @@ export function week(db: Db, anchor: DateKey = todayKey()): TrackerWeek {
     totalCount: CATEGORIES.reduce((n, c) => n + totals[c], 0),
     totalMinutes: CATEGORIES.reduce((n, c) => n + minutes[c], 0),
     entries,
-    pace: pace(db)
+    pace: pace(db, today),
+    tags,
+    tagTotals,
+    tagMinutes,
+    untaggedTotal,
+    untaggedMinutes,
+    tagDue: dueForTags(db, tags, entries, weekStart, today)
   }
 }
