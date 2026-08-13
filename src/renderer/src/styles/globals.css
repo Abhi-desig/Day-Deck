@@ -189,8 +189,18 @@
       rgb(255 255 255 / 0.012) 38%,
       rgb(255 255 255 / 0) 70%
     );
+    /*
+     * Standard property only, and deliberately no `-webkit-` twin.
+     *
+     * Lightning CSS treats the two as one property and keeps whichever is
+     * written last, so a trailing `-webkit-backdrop-filter` silently *replaces*
+     * the standard one in the build. Chromium 150 (Electron 43) has dropped the
+     * prefixed alias entirely — `CSS.supports('-webkit-backdrop-filter',
+     * 'blur(10px)')` is false — so the pair compiled down to a declaration this
+     * engine ignores, and every frosted surface in the app rendered as a flat
+     * translucent fill with no blur at all.
+     */
     backdrop-filter: blur(26px) saturate(180%);
-    -webkit-backdrop-filter: blur(26px) saturate(180%);
   }
 
   /* Same material, opaque fill, no backdrop sampling — and deliberately darker
@@ -245,17 +255,46 @@
    * space behind them looks static. Deliberately faint: it is a sense of
    * parallax, not a ruler.
    *
-   * The dots do not scale with the zoom. Tying them to it would mean repainting
-   * a full-surface background gradient on every frame of a pinch, which is the
-   * single most expensive thing this section could do.
+   * The dots themselves are drawn by React Flow's <Background>, inside the
+   * transformed world, so they pan and scale with it — graph paper rather than a
+   * static backdrop. This only paints the surface behind them.
    */
-  .storyboard-grid {
+  .react-flow {
     background-color: rgb(18 18 23 / 0.6);
-    background-image: radial-gradient(
-      rgb(255 255 255 / 0.06) 1px,
-      transparent 1px
-    );
-    background-size: 22px 22px;
+  }
+
+  /*
+   * The derived brief-to-scene spine, drawn dashed so it reads differently from
+   * a wire the user pulled by hand. It is not a relationship anyone created — it
+   * is every scene's board_id, made visible.
+   */
+  .storyboard-spine .react-flow__edge-path {
+    stroke-dasharray: 3 4;
+  }
+
+  /* React Flow ships a light-theme default for these; the app is dark-first. */
+  .react-flow__handle {
+    border-width: 1px;
+  }
+
+  .react-flow__resize-control.line {
+    border-color: var(--color-amber);
+    opacity: 0.5;
+  }
+
+  .react-flow__resize-control.handle {
+    background: var(--color-amber);
+    border: none;
+    border-radius: 2px;
+  }
+
+  .react-flow__attribution {
+    background: transparent;
+    font-size: 9px;
+  }
+
+  .react-flow__attribution a {
+    color: rgb(255 255 255 / 0.22);
   }
 
   /* Lifts the focused card off the canvas: a contact shadow, a wide ambient

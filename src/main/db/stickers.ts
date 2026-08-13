@@ -74,12 +74,24 @@ export function listForDate(db: Db, date: DateKey): Sticker[] {
     .map(toSticker)
 }
 
-export function getSticker(db: Db, id: string): Sticker {
+/**
+ * Like `getSticker`, but a missing row is an answer rather than an exception.
+ *
+ * The wall can legitimately hold a note whose row has gone — the launch sweep
+ * hard-deletes expired temp notes, and a backup restore wipes every table — so
+ * "is this still here?" is a question the write path has to be able to ask.
+ */
+export function findSticker(db: Db, id: string): Sticker | null {
   const row = db
     .prepare<[string], StickerRow>(`SELECT * FROM stickers WHERE id = ?`)
     .get(id)
-  if (!row) throw new Error(`Sticker not found: ${id}`)
-  return toSticker(row)
+  return row ? toSticker(row) : null
+}
+
+export function getSticker(db: Db, id: string): Sticker {
+  const sticker = findSticker(db, id)
+  if (!sticker) throw new Error(`Sticker not found: ${id}`)
+  return sticker
 }
 
 export function createSticker(db: Db, input: NewSticker): Sticker {
@@ -117,11 +129,22 @@ const PATCH_COLUMNS: Record<keyof StickerPatch, string> = {
   folderId: 'folder_id'
 }
 
+/**
+ * Apply a patch, or answer `null` if the note is no longer on the wall.
+ *
+ * Deliberately not an error. `UPDATE ... WHERE id = ?` against a row that has
+ * been swept or wiped by a restore is a silent no-op, and this used to report
+ * that by re-reading through `getSticker` and throwing — which reached the
+ * renderer as a raw `Error invoking remote method 'stickers:update'` banner and,
+ * worse, told the store nothing it could act on. A `null` says "drop it", which
+ * is the only useful answer: a note with no row throws again on every
+ * subsequent drag, so the wall never recovers on its own.
+ */
 export function updateSticker(
   db: Db,
   id: string,
   patch: StickerPatch
-): Sticker {
+): Sticker | null {
   const sets: string[] = []
   const values: unknown[] = []
 
@@ -139,7 +162,9 @@ export function updateSticker(
     )
   }
 
-  return getSticker(db, id)
+  // Re-read either way: an empty patch still has to answer whether the row is
+  // there, and the row is the authority on what the trims above actually wrote.
+  return findSticker(db, id)
 }
 
 export function deleteSticker(db: Db, id: string): void {

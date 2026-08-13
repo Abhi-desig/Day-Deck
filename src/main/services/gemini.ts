@@ -1,4 +1,11 @@
-import type { AgentMessage, GeminiModel, TopicDraft } from '@shared/types'
+import type {
+  AgentMessage,
+  GeminiModel,
+  ScenePlan,
+  TopicDraft,
+  VideoStyle
+} from '@shared/types'
+import { OMNI_DURATIONS, snapDuration } from '@shared/types'
 
 /**
  * The only outbound network call Day Deck ever makes, and it lives in the main
@@ -617,3 +624,502 @@ export async function askAgent(opts: {
 
   return extractText(payload, 'prose')
 }
+
+/* -------------------------------------------------------- storyboards */
+
+/**
+ * Stage one asks for the breakdown only — what happens, shot by shot. Prompts
+ * are deliberately absent from the schema: they are stage two's job, run after
+ * the user has approved the scenes, so a rejected breakdown never costs the
+ * tokens of prompts nobody wanted.
+ */
+const SCENE_SCHEMA = {
+  type: 'object',
+  properties: {
+    scenes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          description: { type: 'string' },
+          // Constrained here *and* snapped after parsing. An enum in the schema
+          // is a strong hint, not a guarantee, and a seven-second scene is not
+          // something the model can render.
+          duration_sec: { type: 'integer', enum: [...OMNI_DURATIONS] }
+        },
+        required: ['title', 'description', 'duration_sec'],
+        propertyOrdering: ['title', 'description', 'duration_sec']
+      }
+    }
+  },
+  required: ['scenes']
+} as const
+
+export interface ScenePlanInput {
+  apiKey: string
+  model: string
+  brief: string
+  visualStyle: string
+  /** The look to write the prompts in, when one has been placed on the board. */
+  style: VideoStyle | null
+  /** What is already on the board, so the model can be told to respect it. */
+  existing: { title: string; description: string; hasPrompt: boolean }[]
+  /** References wired to the board, named so prompts can call for them. */
+  references: string[]
+}
+
+/**
+ * The style, flattened into the order a prompt should state it.
+ *
+ * Built here rather than in the renderer because it is the same assembly whether
+ * the model is writing the prompt or a person is reading the style back — and two
+ * copies of "what a style says" would drift.
+ */
+export function renderStyle(style: VideoStyle): string {
+  const named: [string, string][] = [
+    ['Video style', style.videoStyle],
+    ['Camera', style.camera],
+    ['Lens', style.lens],
+    ['Grade', style.grade],
+    ['Lighting', style.lighting],
+    ['Film stock', style.filmStock],
+    ['Aspect', style.aspect]
+  ]
+  const lines = named
+    .filter(([, value]) => value.trim())
+    .map(([label, value]) => `- ${label}: ${value.trim()}`)
+
+  for (const extra of style.extras) {
+    if (!extra.key.trim() || !extra.value.trim()) continue
+    lines.push(`- ${extra.key.trim()}: ${extra.value.trim()}`)
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * Turn a brief into scenes — the breakdown only.
+ *
+ * Prompts are not asked for here. The user approves the scene list first, then
+ * a second call writes prompts for the scenes that survived. Duration is still
+ * not a free number — it is one of the lengths the generator actually supports,
+ * chosen per scene according to what the shot needs, which is why the prompt
+ * explains what each length is *for* rather than just listing them.
+ */
+function buildScenePrompt(opts: ScenePlanInput): string {
+  const parts: string[] = [
+    'You are a director breaking a creative brief into individual shots for an AI video generator.',
+    '',
+    'CREATIVE BRIEF:',
+    opts.brief.trim() || '(none given)'
+  ]
+
+  if (opts.visualStyle.trim()) {
+    parts.push('', 'VISUAL STYLE (from the brief):', opts.visualStyle.trim())
+  }
+
+  if (opts.style) {
+    parts.push(
+      '',
+      `LOOK — "${opts.style.name}". The film will be shot in this look; let it shape what shots are worth having:`,
+      renderStyle(opts.style)
+    )
+  }
+
+  if (opts.references.length > 0) {
+    parts.push(
+      '',
+      'REFERENCE MATERIAL available on this board (mention one in a description only if the shot genuinely uses it):',
+      ...opts.references.map((r) => `- ${r}`)
+    )
+  }
+
+  if (opts.existing.length > 0) {
+    parts.push(
+      '',
+      'ALREADY ON THE BOARD, in order. Keep what works, in this order where you can:',
+      ...opts.existing.map(
+        (scene, i) =>
+          `${i + 1}. ${scene.title || '(untitled)'} — ${
+            scene.description || '(no description)'
+          }${scene.hasPrompt ? ' [has a hand-written prompt]' : ''}`
+      )
+    )
+  }
+
+  parts.push(
+    '',
+    'RULES:',
+    `- duration_sec must be exactly one of: ${OMNI_DURATIONS.join(', ')}. Nothing else is renderable.`,
+    `- Choose per scene by what the shot needs: ${OMNI_DURATIONS[0]}s for a single beat, a look, a cut-in, a reveal; ${OMNI_DURATIONS[OMNI_DURATIONS.length - 1]}s for a developing action, a move, or a shot that has to breathe.`,
+    '- A scene is one continuous shot. No cuts inside a scene.',
+    '- title is a short shot name, 2-5 words, no numbering.',
+    '- description says what happens in this scene: subject, action, camera move if any. One or two sentences, written for the person reading the board.',
+    '- Order the scenes as they will be cut together.',
+    '- Cover the whole brief. Use as many scenes as it genuinely needs and no more.',
+    '- Do not write generation prompts. That is a later, separate step.'
+  )
+
+  return parts.join('\n')
+}
+
+/**
+ * Parse defensively, then snap.
+ *
+ * `duration_sec` is snapped to the nearest supported length rather than rejected:
+ * a model that returns 7 despite the enum has still done the useful part of the
+ * job, and throwing away a whole plan over one number would be the wrong trade.
+ */
+function parseScenes(raw: string): ScenePlan[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new GeminiError('Gemini did not return usable JSON for the scenes.', 'parse')
+  }
+
+  const scenes = (parsed as { scenes?: unknown }).scenes
+  if (!Array.isArray(scenes)) {
+    throw new GeminiError('Gemini returned JSON without a "scenes" array.', 'parse')
+  }
+
+  const out: ScenePlan[] = []
+  for (const entry of scenes) {
+    if (!entry || typeof entry !== 'object') continue
+    const s = entry as Record<string, unknown>
+
+    const description = typeof s.description === 'string' ? s.description.trim() : ''
+    // A scene with no description is not a scene. A title tells nobody anything.
+    if (!description) continue
+
+    const seconds = Number(s.duration_sec)
+    out.push({
+      title: typeof s.title === 'string' ? s.title.trim() : '',
+      description,
+      // Stage one never writes prompts; the caller decides what a scene's
+      // prompt is (a new scene has none, a paired one keeps its own).
+      prompt: '',
+      durationSec: Number.isFinite(seconds)
+        ? snapDuration(seconds)
+        : OMNI_DURATIONS[0]
+    })
+  }
+
+  if (out.length === 0) {
+    throw new GeminiError(
+      'Gemini did not return any usable scenes for that brief.',
+      'parse'
+    )
+  }
+
+  return out
+}
+
+export async function planScenes(opts: ScenePlanInput): Promise<ScenePlan[]> {
+  return parseScenes(
+    await generateJson(
+      opts.apiKey,
+      opts.model,
+      buildScenePrompt(opts),
+      SCENE_SCHEMA,
+      180_000
+    )
+  )
+}
+
+/* ------------------------------------------------------- prompt writing */
+
+/**
+ * Stage two: prompts for scenes the user has already approved.
+ *
+ * Each prompt is returned against its scene number rather than positionally, so
+ * a model that skips one cannot silently shift every prompt after it onto the
+ * wrong card.
+ */
+const PROMPT_SCHEMA = {
+  type: 'object',
+  properties: {
+    prompts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          scene: { type: 'integer' },
+          prompt: { type: 'string' }
+        },
+        required: ['scene', 'prompt'],
+        propertyOrdering: ['scene', 'prompt']
+      }
+    }
+  },
+  required: ['prompts']
+} as const
+
+export interface PromptPlanInput {
+  apiKey: string
+  model: string
+  brief: string
+  visualStyle: string
+  /** The look every prompt must restate in full, when one is placed. */
+  style: VideoStyle | null
+  /** References wired to the brief — they inform every shot. */
+  briefReferences: string[]
+  /** Every scene on the board, in cutting order. All of them, every call —
+      the whole board is the context that keeps shot 12 consistent with shot 2. */
+  scenes: {
+    /** 1-based board position; the number prompts come back against. */
+    number: number
+    title: string
+    description: string
+    durationSec: number | null
+    /** References wired to this scene specifically. */
+    references: string[]
+  }[]
+  /** The scene numbers to write this call. A batch, not always the board. */
+  write: number[]
+}
+
+/**
+ * The whole board goes in every call; only a batch of prompts comes back.
+ *
+ * Consistency is the entire job here, which is why the style block is stated
+ * once and the model is told to fold it into every prompt in the same wording —
+ * a prompt that says "in the established style" is worthless the moment it
+ * leaves this app, and leaving is the entire purpose of a prompt.
+ */
+function buildPromptWriterPrompt(opts: PromptPlanInput): string {
+  const parts: string[] = [
+    'You are a director writing generation prompts, one per shot, for an AI video generator.',
+    '',
+    'CREATIVE BRIEF:',
+    opts.brief.trim() || '(none given)'
+  ]
+
+  if (opts.visualStyle.trim()) {
+    parts.push('', 'VISUAL STYLE (from the brief):', opts.visualStyle.trim())
+  }
+
+  if (opts.style) {
+    parts.push(
+      '',
+      `LOOK — "${opts.style.name}". Fold this look into every prompt, in full and in the same wording, so the shots cut together:`,
+      renderStyle(opts.style)
+    )
+  }
+
+  if (opts.briefReferences.length > 0) {
+    parts.push(
+      '',
+      'FILM-WIDE REFERENCES, wired to the brief. They inform every shot:',
+      ...opts.briefReferences.map((r) => `- ${r}`)
+    )
+  }
+
+  parts.push(
+    '',
+    'THE BOARD, in cutting order:',
+    ...opts.scenes.map((scene) => {
+      const duration = scene.durationSec == null ? '' : ` [${scene.durationSec}s]`
+      const refs =
+        scene.references.length > 0
+          ? ` [references: ${scene.references.join(', ')}]`
+          : ''
+      return `${scene.number}. ${scene.title || '(untitled)'} — ${
+        scene.description || '(no description)'
+      }${duration}${refs}`
+    }),
+    '',
+    `WRITE PROMPTS FOR SCENES: ${opts.write.join(', ')}. The rest are context — return nothing for them.`,
+    '',
+    'RULES:',
+    '- Every prompt must stand alone. Describe the look in the prompt itself; never write "as established", "same style", or "continuing from the previous shot".',
+    '- A prompt describes one continuous shot: subject, action, camera, lens, light, grade. No cuts inside a scene.',
+    '- Keep the look wording identical across prompts. Consistency across shots is the whole job.',
+    "- Use a scene's wired references by name only when the shot genuinely uses them; film-wide references apply to every shot.",
+    '- Return each prompt with its scene number.'
+  )
+
+  return parts.join('\n')
+}
+
+/**
+ * Keep only what was asked for.
+ *
+ * A prompt for a scene outside the batch is dropped, and a batch scene the
+ * model skipped simply comes back missing — the caller leaves that card
+ * untouched rather than inventing an empty prompt for it.
+ */
+function parsePrompts(raw: string, write: readonly number[]): Map<number, string> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new GeminiError('Gemini did not return usable JSON for the prompts.', 'parse')
+  }
+
+  const prompts = (parsed as { prompts?: unknown }).prompts
+  if (!Array.isArray(prompts)) {
+    throw new GeminiError('Gemini returned JSON without a "prompts" array.', 'parse')
+  }
+
+  const wanted = new Set(write)
+  const out = new Map<number, string>()
+  for (const entry of prompts) {
+    if (!entry || typeof entry !== 'object') continue
+    const p = entry as Record<string, unknown>
+    const scene = Number(p.scene)
+    const prompt = typeof p.prompt === 'string' ? p.prompt.trim() : ''
+    if (!Number.isInteger(scene) || !wanted.has(scene) || !prompt) continue
+    out.set(scene, prompt)
+  }
+
+  if (out.size === 0) {
+    throw new GeminiError(
+      'Gemini did not return a prompt for any of those scenes.',
+      'parse'
+    )
+  }
+
+  return out
+}
+
+export async function planPrompts(
+  opts: PromptPlanInput
+): Promise<Map<number, string>> {
+  return parsePrompts(
+    await generateJson(
+      opts.apiKey,
+      opts.model,
+      buildPromptWriterPrompt(opts),
+      PROMPT_SCHEMA,
+      180_000
+    ),
+    opts.write
+  )
+}
+
+/* ------------------------------------------------------- style sorting */
+
+/**
+ * Sorting a look description into the named style fields.
+ *
+ * The one hard rule, stated three ways below because it is the entire feature:
+ * the model may only move the user's words into boxes. A field the text never
+ * mentioned stays empty, and a value that appears from nowhere is thrown away
+ * by `keepGroundedFields` even if the model ignores the instruction.
+ */
+const STYLE_SORT_FIELDS = [
+  ['video_style', 'the overall genre or treatment of the footage'],
+  ['camera', 'camera body or movement — handheld, locked off, gimbal'],
+  ['lens', 'focal length, anamorphic, zoom'],
+  ['grade', 'colour grade or palette'],
+  ['lighting', 'light sources and quality'],
+  ['film_stock', 'a named film stock or sensor look'],
+  ['aspect', 'aspect ratio']
+] as const
+
+const STYLE_SORT_SCHEMA = {
+  type: 'object',
+  properties: Object.fromEntries(
+    STYLE_SORT_FIELDS.map(([key]) => [key, { type: 'string' }])
+  ),
+  required: STYLE_SORT_FIELDS.map(([key]) => key)
+} as const
+
+function buildStyleSortPrompt(text: string): string {
+  return [
+    'You are filing a film look description into fixed fields. You are a sorter, not a writer.',
+    '',
+    'THE DESCRIPTION, verbatim:',
+    '"""',
+    text.trim(),
+    '"""',
+    '',
+    'FIELDS:',
+    ...STYLE_SORT_FIELDS.map(([key, hint]) => `- ${key}: ${hint}`),
+    '',
+    'RULES:',
+    '- Use only words and phrases that appear in the description. Do not add, infer, or embellish anything.',
+    '- A field the description says nothing about must be an empty string. Empty is the correct answer, not a failure.',
+    '- Do not repeat the same phrase into several fields; put it in the one it fits best.',
+    '- Keep the user\'s own wording. Reordering and joining their phrases is fine; new adjectives are not.'
+  ].join('\n')
+}
+
+/** The camelCase patch keys, in STYLE_SORT_FIELDS order. */
+const STYLE_SORT_KEYS = [
+  'videoStyle',
+  'camera',
+  'lens',
+  'grade',
+  'lighting',
+  'filmStock',
+  'aspect'
+] as const
+
+export type StyleSortResult = Partial<
+  Record<(typeof STYLE_SORT_KEYS)[number], string>
+>
+
+const wordsOf = (text: string): Set<string> =>
+  new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9.]+/)
+      .filter((w) => w.length >= 2)
+  )
+
+/**
+ * The programmatic half of "nothing invented": a value none of whose words
+ * appear in the source text cannot have come from it, so it is dropped even
+ * though the model returned it. Exported for its tests.
+ */
+export function keepGroundedFields(
+  raw: Record<string, unknown>,
+  text: string
+): StyleSortResult {
+  const source = wordsOf(text)
+  const out: StyleSortResult = {}
+
+  STYLE_SORT_FIELDS.forEach(([snake], i) => {
+    const value = raw[snake]
+    if (typeof value !== 'string') return
+    const trimmed = value.trim()
+    if (!trimmed) return
+    const words = [...wordsOf(trimmed)]
+    if (words.length === 0 || !words.some((w) => source.has(w))) return
+    out[STYLE_SORT_KEYS[i]] = trimmed
+  })
+
+  return out
+}
+
+export async function sortStyleText(opts: {
+  apiKey: string
+  model: string
+  text: string
+}): Promise<StyleSortResult> {
+  const raw = await generateJson(
+    opts.apiKey,
+    opts.model,
+    buildStyleSortPrompt(opts.text),
+    STYLE_SORT_SCHEMA,
+    30_000
+  )
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new GeminiError('Gemini did not return usable JSON for the sort.', 'parse')
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new GeminiError('Gemini returned something other than fields.', 'parse')
+  }
+
+  return keepGroundedFields(parsed as Record<string, unknown>, opts.text)
+}
+
+/** Exported for their tests — the prompt is the feature. */
+export { buildScenePrompt, buildPromptWriterPrompt, buildStyleSortPrompt }

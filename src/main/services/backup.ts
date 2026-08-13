@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+import { isAbsolute, resolve, sep } from 'node:path'
 import type { Db } from '../db'
 import { MIGRATIONS } from '../db/migrations'
 
@@ -32,8 +34,16 @@ const TABLES = [
   'stickers',
   'goal_notes',
   'tags',
+  'project_folders',
+  'video_styles',
   'storyboards',
   'storyboard_frames',
+  'storyboard_lists',
+  'storyboard_list_items',
+  // Wires last of the storyboard group: it references frames and items both.
+  'storyboard_frame_refs',
+  // And this one references a board and a style, so it follows both.
+  'storyboard_style_nodes',
   // Slots second-to-last: rolled_from is a self-reference, handled below.
   'slots',
   // And their attachments after them, since slot_tags references both ends.
@@ -123,6 +133,32 @@ function parseBackup(text: string): Backup {
  * it was. A half-applied import — goals without topics, slots pointing at
  * curricula that were never inserted — would be worse than a failed one.
  */
+/**
+ * Refuse a project root broad enough to be the disk.
+ *
+ * `/`, the home directory itself, and any ancestor of home are not project
+ * folders — they are the filesystem wearing a project's name, and every
+ * workspace feature would happily operate across them. A legitimate project
+ * anywhere *inside* home, or on another volume, passes untouched.
+ */
+export function assertSaneProjectRoot(row: Record<string, unknown>): void {
+  const path = row.path
+  if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
+    throw new BackupError('That backup names a project without a real path.')
+  }
+
+  const resolved = resolve(path)
+  const home = resolve(homedir())
+  const isAncestorOfHome =
+    resolved === home || home.startsWith(resolved + sep)
+
+  if (resolved === sep || isAncestorOfHome) {
+    throw new BackupError(
+      `That backup names ${resolved} as a project folder, which would give the workspace the run of the disk. It was not restored.`
+    )
+  }
+}
+
 export function importBackup(db: Db, text: string): ImportSummary {
   const backup = parseBackup(text)
   const running = MIGRATIONS.length
@@ -161,6 +197,12 @@ export function importBackup(db: Db, text: string): ImportSummary {
       )
 
       for (const row of rows) {
+        // A project row's path becomes a root the workspace bridge, the file
+        // tree and the terminal all operate inside. A backup that names `/` or
+        // an ancestor of the home directory would hand all three the whole
+        // disk, so those rows are refused rather than trusted.
+        if (table === 'projects') assertSaneProjectRoot(row)
+
         const columns = Object.keys(row).filter((c) => known.has(c))
         if (columns.length === 0) continue
 

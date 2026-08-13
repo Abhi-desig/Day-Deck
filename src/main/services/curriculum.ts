@@ -110,7 +110,7 @@ export async function generatePlan(
   input: CurriculumInput,
   onProgress: Progress
 ): Promise<CurriculumPlan> {
-  const apiKey = requireApiKey()
+  const apiKey = requireApiKey('goals')
   const start = todayKey()
 
   const days = eligibleDays(start, input.deadline, input.restDays)
@@ -194,7 +194,7 @@ export async function subdivideGoal(
     return { plan: planFor(db, curriculumId), topicsSubdivided: 0, error: null }
   }
 
-  const apiKey = requireApiKey()
+  const apiKey = requireApiKey('goals')
   const excerpt = curriculum.rawText.slice(0, EXCERPT_CHARS)
 
   let updated = 0

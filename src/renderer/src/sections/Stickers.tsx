@@ -17,7 +17,7 @@ import { useDeck } from '../store/useDeck'
 import { useIntent } from '../store/useShell'
 import { useStickers } from '../store/useStickers'
 import { cn } from '../lib/cn'
-import { clampToBoard, findFreeSpot, type Rect } from '../lib/board'
+import { clamp, clampToBoard, findFreeSpot, type Rect } from '../lib/board'
 import { EASE_OUT, SPRING } from '../lib/motion'
 import { paperStyle } from '../lib/stickerColor'
 
@@ -27,6 +27,19 @@ const NOTE_H = 168
 const BOARD_H = 1400
 /** Breathing room at the edges, and between two freshly-placed notes. */
 const PAD = 16
+
+/**
+ * The board's own idea of how wide it is.
+ *
+ * One helper because two call sites used to disagree: placement floored the
+ * width at `NOTE_W + PAD * 2` and the drop clamp at `NOTE_W`, so on a board
+ * narrower than a note plus its padding a freshly-placed note sat outside its
+ * own clamp range and jumped left the first time it was dragged.
+ */
+const boardSize = (measured: number): { w: number; h: number } => ({
+  w: Math.max(measured, NOTE_W + PAD * 2),
+  h: BOARD_H
+})
 
 /** Enough tilt to look pinned by hand, never enough to be hard to read. */
 const MAX_TILT = 5
@@ -99,10 +112,15 @@ export function Stickers() {
   async function create(
     input: Omit<NewSticker, 'x' | 'y' | 'rotation' | 'folderId'>
   ): Promise<void> {
-    // Placed against what is *visible*, not against the whole wall: two notes
-    // in different folders never share a screen, so treating a hidden one as an
-    // obstacle would push new notes into empty space for no reason.
-    const taken: Rect[] = visible.map((s) => ({
+    // Inside a folder view, placed against what is *visible*: two notes in
+    // different folders never share a screen there, so treating a hidden one as
+    // an obstacle would push new notes into empty space for no reason.
+    //
+    // Under "All" every note does share a screen, so the whole wall is the
+    // obstacle set. Using `visible` there was how a note added while a folder
+    // was open could come to sit exactly on top of one from another folder.
+    const obstacles = filter === ALL ? stickers : visible
+    const taken: Rect[] = obstacles.map((s) => ({
       x: s.x,
       y: s.y,
       w: NOTE_W,
@@ -112,7 +130,7 @@ export function Stickers() {
     const spot = findFreeSpot(
       taken,
       { w: NOTE_W, h: NOTE_H },
-      { w: Math.max(boardW, NOTE_W + PAD * 2), h: BOARD_H },
+      boardSize(boardW),
       PAD,
       PAD
     )
@@ -457,17 +475,36 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
    * writes to while dragging, so there is no handover between "being dragged"
    * and "settling" at all.
    */
-  const x = useMotionValue(sticker.x)
-  const y = useMotionValue(sticker.y)
+  /**
+   * Where the note is *painted*, which is not always where it is stored.
+   *
+   * The board is only as wide as the window — its surface carries an explicit
+   * height and no width — so shrinking the window shrinks the coordinate space
+   * under notes that were placed when it was wider. Clamping only on drop (the
+   * write path) left the read path free to re-apply an out-of-range stored `x`
+   * on every load and every patch round-trip, which is how a note ended up
+   * floating outside the visible board with no way to reach it.
+   *
+   * Deliberately not written back: a briefly-narrow window must not permanently
+   * rearrange the wall. Widen it again and every note returns to where it was
+   * put. Only a real drag persists a new position.
+   */
+  const board = boardSize(boardW)
+  const paintedX = clamp(sticker.x, 0, Math.max(0, board.w - NOTE_W))
+  const paintedY = clamp(sticker.y, 0, Math.max(0, board.h - NOTE_H))
+
+  const x = useMotionValue(paintedX)
+  const y = useMotionValue(paintedY)
 
   // Follow the store when it changes underneath us — an import, an undo, or the
-  // clamp below landing somewhere other than where the finger let go. Skipped
-  // mid-drag, where the finger is the authority.
+  // clamp below landing somewhere other than where the finger let go. Also
+  // re-runs when the board is resized, which is what pulls a stranded note back
+  // into view. Skipped mid-drag, where the finger is the authority.
   useEffect(() => {
     if (draggingRef.current) return
-    x.set(sticker.x)
-    y.set(sticker.y)
-  }, [sticker.x, sticker.y, x, y])
+    x.set(paintedX)
+    y.set(paintedY)
+  }, [paintedX, paintedY, x, y])
 
   // The right and bottom edges are real numbers rather than a ref to the board,
   // because a ref constrains to the *scroll viewport* — which is why notes
@@ -476,8 +513,8 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
   const bounds = {
     left: 0,
     top: 0,
-    right: Math.max(0, boardW - NOTE_W),
-    bottom: Math.max(0, BOARD_H - NOTE_H)
+    right: Math.max(0, board.w - NOTE_W),
+    bottom: Math.max(0, board.h - NOTE_H)
   }
 
   function commitBody(): void {
@@ -511,7 +548,7 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
         const landed = clampToBoard(
           { x: x.get(), y: y.get() },
           { w: NOTE_W, h: NOTE_H },
-          { w: Math.max(boardW, NOTE_W), h: BOARD_H }
+          boardSize(boardW)
         )
         void move(sticker.id, landed.x, landed.y, sticker.rotation)
       }}
@@ -536,7 +573,10 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
         y,
         rotate: Math.max(-MAX_TILT, Math.min(MAX_TILT, sticker.rotation)),
         width: NOTE_W,
-        minHeight: NOTE_H
+        // `height`, not `minHeight`: every clamp and collision call on this wall
+        // passes `{ w: NOTE_W, h: NOTE_H }`, so a card allowed to grow past that
+        // silently overlaps the note below it. The body scrolls instead.
+        height: NOTE_H
       }}
       className={cn(
         // `left-0 top-0` so the transform above is the note's board coordinate
@@ -592,7 +632,10 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
             }
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commitBody()
           }}
-          className="min-h-[76px] flex-1 resize-none rounded-md bg-black/15 p-1.5 text-[13px] leading-relaxed text-ink outline-none"
+          // `min-h-0` is what lets a flex child scroll instead of forcing its
+          // parent taller — the card's height is fixed, so the overflow has to
+          // go somewhere and this is where.
+          className="min-h-0 flex-1 resize-none overflow-y-auto rounded-md bg-black/15 p-1.5 text-[13px] leading-relaxed text-ink outline-none"
         />
       ) : (
         <button
@@ -602,7 +645,7 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
           onDoubleClick={() => {
             if (!draggingRef.current) setEditing(true)
           }}
-          className="flex-1 cursor-text whitespace-pre-wrap break-words text-left text-[13px] leading-relaxed text-ink"
+          className="min-h-0 flex-1 cursor-text overflow-y-auto whitespace-pre-wrap break-words text-left text-[13px] leading-relaxed text-ink"
         >
           {sticker.body}
         </button>

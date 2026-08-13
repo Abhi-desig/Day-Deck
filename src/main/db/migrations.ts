@@ -301,5 +301,163 @@ export const MIGRATIONS: readonly string[] = [
     created_at  TEXT NOT NULL
   );
   CREATE INDEX idx_frames_board ON storyboard_frames(board_id);
+  `,
+
+  /* v7 — the storyboard becomes a graph. */
+  `
+  -- The brief lives on the board row rather than in a nodes table, and that is
+  -- the whole trick: there is no row to delete, so "always present, never
+  -- deletable, exactly one per board" is a property of the schema instead of a
+  -- rule the UI has to remember to enforce.
+  ALTER TABLE storyboards ADD COLUMN brief        TEXT NOT NULL DEFAULT '';
+  ALTER TABLE storyboards ADD COLUMN visual_style TEXT NOT NULL DEFAULT '';
+
+  -- Generation length for this shot, in seconds, constrained to what the model
+  -- can actually produce. Nullable because "not yet decided" is a real state and
+  -- is not the same as any particular number.
+  ALTER TABLE storyboard_frames ADD COLUMN duration_sec INTEGER;
+
+  -- A list of references, as a container node on the canvas. It carries its own
+  -- coordinates for the same reason frames do: where it sits is information.
+  CREATE TABLE storyboard_lists (
+    id         TEXT PRIMARY KEY,
+    board_id   TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL DEFAULT '',
+    x          REAL NOT NULL DEFAULT 0,
+    y          REAL NOT NULL DEFAULT 0,
+    w          REAL NOT NULL DEFAULT 260,
+    h          REAL NOT NULL DEFAULT 220,
+    color      TEXT NOT NULL DEFAULT 'amber',
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_lists_board ON storyboard_lists(board_id);
+
+  CREATE TABLE storyboard_list_items (
+    id         TEXT PRIMARY KEY,
+    list_id    TEXT NOT NULL REFERENCES storyboard_lists(id) ON DELETE CASCADE,
+    label      TEXT NOT NULL DEFAULT '',
+    -- An absolute path to media that is linked, never copied. That means this can
+    -- go stale, so the read path stats it and reports "missing" rather than
+    -- storing a flag that would itself go stale.
+    media_path TEXT,
+    media_kind TEXT CHECK (media_kind IN ('image','video')),
+    -- A small JPEG data URI, generated once on import. Keeps the board painting
+    -- fast, and gives a video row a poster frame without an ffmpeg dependency.
+    thumb      TEXT,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_items_list ON storyboard_list_items(list_id);
+
+  -- The only edge the graph stores. Both ends are real foreign keys with CASCADE,
+  -- so deleting either node takes its wires with it and there is no orphan sweep
+  -- to remember to run.
+  --
+  -- Brief-to-scene and style-to-brief are deliberately absent: every frame already
+  -- carries its board_id, and a placed style always attaches to the one brief, so
+  -- both are derivable. Storing them would mean a polymorphic edge table with no
+  -- foreign keys at all — strictly worse than computing them.
+  CREATE TABLE storyboard_frame_refs (
+    frame_id   TEXT NOT NULL REFERENCES storyboard_frames(id)     ON DELETE CASCADE,
+    item_id    TEXT NOT NULL REFERENCES storyboard_list_items(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (frame_id, item_id)
+  );
+  CREATE INDEX idx_sb_refs_item ON storyboard_frame_refs(item_id);
+  `,
+
+  /* v8 — reusable cinematic styles. */
+  `
+  -- Board-independent on purpose: a look you worked out once outlives the board
+  -- you worked it out on, and the whole point of saving one is using it again.
+  CREATE TABLE video_styles (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    -- The named dimensions. Separate columns rather than one blob because these
+    -- are the ones the prompt builder assembles in a fixed order, and a shot
+    -- described as "35mm anamorphic" needs the lens to be a lens.
+    video_style TEXT NOT NULL DEFAULT '',
+    camera      TEXT NOT NULL DEFAULT '',
+    lens        TEXT NOT NULL DEFAULT '',
+    grade       TEXT NOT NULL DEFAULT '',
+    lighting    TEXT NOT NULL DEFAULT '',
+    film_stock  TEXT NOT NULL DEFAULT '',
+    aspect      TEXT NOT NULL DEFAULT '',
+    -- Everything else, as a JSON array of {key,value}. Same shape as
+    -- tags.keywords: an open dimension that does not need a migration to grow.
+    extras      TEXT NOT NULL DEFAULT '[]',
+    color       TEXT NOT NULL DEFAULT 'amber',
+    sort_index  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+  );
+
+  -- A style placed on one board's canvas. Its wire to the brief is not stored:
+  -- there is exactly one brief per board, so a placed style is already attached
+  -- to it and an edge row could only ever agree or be wrong.
+  CREATE TABLE storyboard_style_nodes (
+    id         TEXT PRIMARY KEY,
+    board_id   TEXT NOT NULL REFERENCES storyboards(id)  ON DELETE CASCADE,
+    style_id   TEXT NOT NULL REFERENCES video_styles(id) ON DELETE CASCADE,
+    x          REAL NOT NULL DEFAULT 0,
+    y          REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  -- Dropping the same style on the same board twice is the same statement made
+  -- twice, not two statements.
+  CREATE UNIQUE INDEX idx_sb_style_once
+    ON storyboard_style_nodes(board_id, style_id);
+  CREATE INDEX idx_sb_style_board ON storyboard_style_nodes(board_id);
+  `,
+
+  /* v9 — creative projects, and folders that map to real directories. */
+  `
+  -- 'code' or 'creative'. No CHECK constraint deliberately: SQLite cannot alter a
+  -- CHECK afterwards, so adding a third kind later would mean rebuilding the
+  -- table. Every other enum in this app is already validated in the IPC layer,
+  -- which is where this one is too.
+  ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
+
+  -- The file a creative project opens on click — a .prproj, a .aep. NULL for code
+  -- projects, which open in the embedded workspace instead. The project's "path"
+  -- column stays what it always was: the folder this file lives in.
+  ALTER TABLE projects ADD COLUMN entry_path TEXT;
+
+  -- A folder in the panel, backed by a real directory.
+  CREATE TABLE project_folders (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id)        ON DELETE CASCADE,
+    parent_id  TEXT          REFERENCES project_folders(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    -- Relative to the project root, always. Storing an absolute path would mean
+    -- keeping a second copy of the root that could disagree with it, and would
+    -- give this table the power to name somewhere outside the project.
+    rel_path   TEXT NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_project_folder_path
+    ON project_folders(project_id, rel_path);
+  CREATE INDEX idx_project_folder_parent ON project_folders(parent_id);
+  `,
+
+  /* v10 — references on the brief, and a style's own source text. */
+  `
+  -- A reference wired to the brief rather than to one scene. Mirrors
+  -- storyboard_frame_refs exactly, keyed by board because the brief is the
+  -- board: one per board, no id of its own. Brief refs inform every scene's
+  -- prompt; frame refs inform only their own.
+  CREATE TABLE storyboard_brief_refs (
+    board_id   TEXT NOT NULL REFERENCES storyboards(id)          ON DELETE CASCADE,
+    item_id    TEXT NOT NULL REFERENCES storyboard_list_items(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (board_id, item_id)
+  );
+  CREATE INDEX idx_sb_brief_refs_item ON storyboard_brief_refs(item_id);
+
+  -- The look as the user typed it, kept verbatim. The named columns can be
+  -- sorted out of this text by the model, and a bad sort loses nothing because
+  -- this copy is never touched by the sorter.
+  ALTER TABLE video_styles ADD COLUMN source_text TEXT NOT NULL DEFAULT '';
   `
 ]

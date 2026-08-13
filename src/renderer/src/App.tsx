@@ -16,6 +16,7 @@ import { GoalsAdmin } from './sections/GoalsAdmin'
 import { Tracker } from './sections/Tracker'
 import { Storyboards } from './sections/Storyboards'
 import { Stickers } from './sections/Stickers'
+import { Settings } from './sections/Settings'
 
 export function App() {
   // Section lives in the store rather than here, so the command palette can
@@ -64,6 +65,7 @@ export function App() {
     if (openProjectId) go('projects')
   }, [openProjectId, go])
 
+  // Order must match SECTIONS — the dock's index is the panel's index.
   const panels = useMemo(
     () => [
       <Today key="today" />,
@@ -71,7 +73,8 @@ export function App() {
       <GoalsAdmin key="goals" />,
       <Tracker key="tracker" />,
       <Storyboards key="storyboards" />,
-      <Stickers key="stickers" />
+      <Stickers key="stickers" />,
+      <Settings key="settings" />
     ],
     []
   )

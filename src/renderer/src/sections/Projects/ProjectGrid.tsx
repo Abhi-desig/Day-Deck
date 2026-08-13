@@ -28,6 +28,9 @@ interface ProjectGridProps {
   onRemove(id: string): void
   onOpenInEditor(id: string): void
   onAddToToday(project: Project): void
+  onShowFolders(id: string): void
+  /** Whose folder panel is open below the grid, if any. */
+  foldersFor: string | null
   onReorder(orderedIds: string[]): void
 }
 
@@ -38,6 +41,8 @@ export function ProjectGrid({
   onRemove,
   onOpenInEditor,
   onAddToToday,
+  onShowFolders,
+  foldersFor,
   onReorder
 }: ProjectGridProps) {
   const [dragId, setDragId] = useState<string | null>(null)
@@ -161,6 +166,8 @@ export function ProjectGrid({
               onRemove={() => onRemove(project.id)}
               onOpenInEditor={() => onOpenInEditor(project.id)}
               onAddToToday={() => onAddToToday(project)}
+              onShowFolders={() => onShowFolders(project.id)}
+              foldersOpen={foldersFor === project.id}
               onDragStart={(event) => startDrag(project.id, event)}
             />
           </motion.div>

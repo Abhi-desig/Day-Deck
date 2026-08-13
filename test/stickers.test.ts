@@ -56,10 +56,44 @@ describe('stickers', () => {
 
     const moved = repo.updateSticker(db, sticker.id, { x: 400, y: 250 })
 
-    expect(moved.x).toBe(400)
-    expect(moved.y).toBe(250)
-    expect(moved.body).toBe('Drag me')
-    expect(moved.rotation).toBe(sticker.rotation)
+    expect(moved?.x).toBe(400)
+    expect(moved?.y).toBe(250)
+    expect(moved?.body).toBe('Drag me')
+    expect(moved?.rotation).toBe(sticker.rotation)
+  })
+
+  /**
+   * The wall can hold a note whose row has gone — the launch sweep hard-deletes
+   * expired temp notes, and a restore wipes every table. Patching one used to
+   * throw out of a getter, which reached the UI as a raw "Error invoking remote
+   * method" banner and told the store nothing it could act on. A `null` says
+   * "drop it", which is the only answer that lets the wall recover: the note was
+   * otherwise restored and threw again on its very next drag, for ever.
+   */
+  it('answers null for a note that is no longer there, rather than throwing', () => {
+    const sticker = repo.createSticker(db, { ...base, body: 'Swept away' })
+    repo.deleteSticker(db, sticker.id)
+
+    expect(() => repo.updateSticker(db, sticker.id, { x: 1, y: 2 })).not.toThrow()
+    expect(repo.updateSticker(db, sticker.id, { x: 1, y: 2 })).toBeNull()
+  })
+
+  it('answers null for an empty patch on a missing note too', () => {
+    // The no-column path skips the UPDATE entirely, so it needs the same answer.
+    expect(repo.updateSticker(db, 'never-existed', {})).toBeNull()
+  })
+
+  it('finds a note or answers null, without throwing either way', () => {
+    const sticker = repo.createSticker(db, { ...base, body: 'Here' })
+
+    expect(repo.findSticker(db, sticker.id)?.body).toBe('Here')
+    expect(repo.findSticker(db, 'no-such-note')).toBeNull()
+    // getSticker keeps the throwing contract for callers that want it.
+    expect(() => repo.getSticker(db, 'no-such-note')).toThrow(/not found/i)
+  })
+
+  it('deleting a note that is already gone is not an error', () => {
+    expect(() => repo.deleteSticker(db, 'never-existed')).not.toThrow()
   })
 
   it('falls back to butter for a colour it does not recognise', () => {
@@ -205,5 +239,65 @@ describe('the launch sweep', () => {
 
     expect(bootstrap(db).expiredStickers).toHaveLength(1)
     expect(bootstrap(db).expiredStickers).toHaveLength(0)
+  })
+})
+
+describe('sticker folders', () => {
+  let db: TestDb
+
+  beforeEach(() => {
+    db = makeDb()
+  })
+
+  /** Grouping is optional and stays that way — an unfiled note is the norm. */
+  it('leaves a new note in no folder', () => {
+    expect(repo.createSticker(db, base).folderId).toBeNull()
+    expect(repo.listFolders(db)).toHaveLength(0)
+  })
+
+  it('files a note into a folder and back out again', () => {
+    const folder = repo.createFolder(db, { name: 'Manchester', color: 'sky' })
+    const sticker = repo.createSticker(db, base)
+
+    expect(repo.updateSticker(db, sticker.id, { folderId: folder.id })?.folderId)
+      .toBe(folder.id)
+    expect(repo.updateSticker(db, sticker.id, { folderId: null })?.folderId)
+      .toBeNull()
+  })
+
+  /**
+   * ON DELETE SET NULL, not CASCADE: deleting a folder releases its notes back
+   * onto the loose wall, it does not shred them.
+   */
+  it('releases its notes when the folder is deleted', () => {
+    const folder = repo.createFolder(db, { name: 'Doomed', color: 'butter' })
+    const filed = repo.createSticker(db, { ...base, body: 'Filed' })
+    repo.updateSticker(db, filed.id, { folderId: folder.id })
+    const loose = repo.createSticker(db, { ...base, body: 'Loose' })
+
+    repo.deleteFolder(db, folder.id)
+
+    expect(repo.listFolders(db)).toHaveLength(0)
+    const bodies = repo.listStickers(db).map((s) => s.body)
+    expect(bodies).toContain('Filed')
+    expect(bodies).toContain('Loose')
+    expect(repo.getSticker(db, filed.id).folderId).toBeNull()
+  })
+
+  it('renames a folder without disturbing what is in it', () => {
+    const folder = repo.createFolder(db, { name: 'Typo', color: 'mint' })
+    const sticker = repo.createSticker(db, base)
+    repo.updateSticker(db, sticker.id, { folderId: folder.id })
+
+    expect(repo.updateFolder(db, folder.id, { name: 'Fixed' }).name).toBe('Fixed')
+    expect(repo.getSticker(db, sticker.id).folderId).toBe(folder.id)
+  })
+
+  it('refuses to file a note into a folder that does not exist', () => {
+    const sticker = repo.createSticker(db, base)
+
+    expect(() =>
+      repo.updateSticker(db, sticker.id, { folderId: 'no-such-folder' })
+    ).toThrow()
   })
 })

@@ -10,3 +10,6 @@ allowBuilds:
   # binary Node builds here loads unchanged in Electron — no electron-rebuild.
   node-pty: true
   electron-winstaller: false
+minimumReleaseAgeExclude:
+  - '@xyflow/react@12.11.3'
+  - '@xyflow/system@0.0.80'

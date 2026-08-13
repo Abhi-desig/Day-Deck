@@ -224,10 +224,57 @@ export interface BootstrapResult {
 
 /* ------------------------------------------------------------- projects */
 
+/**
+ * What kind of work a project holds, and therefore what clicking it does.
+ *
+ * `code` opens the embedded workspace — file tree, Monaco, a real shell. `creative`
+ * hands its entry file to whichever application owns that file type, because
+ * nothing this app could build would be a better Premiere than Premiere.
+ */
+export const PROJECT_KINDS = ['code', 'creative'] as const
+
+export type ProjectKind = (typeof PROJECT_KINDS)[number]
+
+/**
+ * File types the creative-project picker offers.
+ *
+ * Only a convenience for the dialog — the app never launches these itself, it hands
+ * the path to LaunchServices, which already knows what owns each one. "All files"
+ * stays reachable, so this list being incomplete costs nothing.
+ */
+export const CREATIVE_EXTENSIONS = [
+  'prproj', // Premiere Pro
+  'aep', // After Effects
+  'psd', // Photoshop
+  'ai', // Illustrator
+  'indd', // InDesign
+  'xd',
+  'sesx', // Audition
+  'drp', // DaVinci Resolve
+  'fcpbundle', // Final Cut Pro
+  'motn', // Motion
+  'logicx', // Logic Pro
+  'als', // Ableton Live
+  'ptx', // Pro Tools
+  'blend', // Blender
+  'c4d', // Cinema 4D
+  'sketch',
+  'fig',
+  'afdesign',
+  'afphoto',
+  'afpub'
+] as const
+
 export interface Project {
   id: string
   name: string
   path: string
+  kind: ProjectKind
+  /**
+   * The file a creative project opens, absolute. Null for code projects, and null
+   * for a creative project that is only a folder of assets so far.
+   */
+  entryPath: string | null
   /** Reuses the goal palette — see GOAL_COLORS. */
   color: GoalColor
   /**
@@ -252,6 +299,119 @@ export interface Project {
 export interface ProjectAdded {
   project: Project
   duplicate: boolean
+}
+
+/**
+ * A folder in the Project Panel, backed by a real directory.
+ *
+ * The mapping is the point: creating one here creates the directory, and dropping
+ * an asset in copies the file there. Otherwise the panel would be a second, prettier
+ * place for things to be lost, and the files would still be on the desktop.
+ */
+export interface ProjectFolder {
+  id: string
+  projectId: string
+  parentId: string | null
+  name: string
+  /** Relative to the project root, POSIX-separated. */
+  relPath: string
+  sortIndex: number
+  createdAt: string
+  /** Computed at read time: the directory is not there any more. */
+  missing: boolean
+  /** How many files are in it right now, directories excluded. */
+  fileCount: number
+}
+
+/** What a copy-in actually did. Skipped names already existed. */
+export interface AssetsFiled {
+  folder: ProjectFolder
+  copied: string[]
+  skipped: string[]
+}
+
+/**
+ * The subfolders a new project starts with.
+ *
+ * A project is not a bare directory in practice — it is a shape you end up
+ * recreating by hand every time. These are created on disk *and* registered in the
+ * panel, so they are immediately droppable targets. Any of them can be renamed or
+ * removed afterwards; nothing depends on these names.
+ */
+export const PROJECT_TEMPLATE: Record<ProjectKind, readonly string[]> = {
+  creative: ['Footage', 'References', 'Exports', 'Project files'],
+  code: ['src', 'assets', 'docs']
+}
+
+/** Where new projects of each kind are created. Null until you have set one. */
+export interface ProjectHomes {
+  code: string | null
+  creative: string | null
+}
+
+/* --------------------------------------------------------- the desktop bin */
+
+/**
+ * A place files pile up.
+ *
+ * Fixed rather than user-defined: these are the two directories macOS itself
+ * dumps things into, which is the whole problem being solved. Both are resolved
+ * from `app.getPath`, so they follow the account rather than being hard-coded.
+ */
+export const BIN_SOURCES = ['desktop', 'downloads'] as const
+
+export type BinSourceId = (typeof BIN_SOURCES)[number]
+
+export const BIN_SOURCE_LABEL: Record<BinSourceId, string> = {
+  desktop: 'Desktop',
+  downloads: 'Downloads'
+}
+
+/**
+ * One entry in the bin.
+ *
+ * Distinct from `FileNode` — which the code editor's file tree uses — because the
+ * bin needs a modified time to sort newest-first, and the editor's tree walks
+ * directories large enough that stat-ing every entry for a field it never shows
+ * would be a real cost.
+ */
+export interface BinEntry {
+  /** Path relative to the source root, POSIX-separated. */
+  path: string
+  name: string
+  directory: boolean
+  /** Bytes. For a directory this is 0 — its contents are not walked. */
+  size: number
+  modifiedMs: number
+}
+
+export interface BinListing {
+  source: BinSourceId
+  /** '' is the source root. */
+  rel: string
+  entries: BinEntry[]
+  /** The listing was capped; there are more entries than this. */
+  truncated: boolean
+}
+
+/** Move takes the original with it. Copy leaves it where it was. */
+export type FileMode = 'move' | 'copy'
+
+/**
+ * What a filing operation actually did, per name.
+ *
+ * Three lists rather than a count, because which files did not make it is the
+ * part you need to act on: a skip means something of that name was already there
+ * and the original is still sitting where it was.
+ */
+export interface AssetsMoved {
+  folder: ProjectFolder
+  mode: FileMode
+  moved: string[]
+  copied: string[]
+  skipped: string[]
+  /** Names whose original could not be removed after a cross-volume copy. */
+  leftBehind: string[]
 }
 
 /* ------------------------------------------------- workspace file access */
@@ -593,6 +753,37 @@ export interface KeyStatus {
   encryptionAvailable: boolean
 }
 
+/**
+ * One key slot per feature that calls out.
+ *
+ * All Gemini, but separate quotas: a heavy storyboard session must not starve
+ * the daily planner. Every slot falls back to `default` when empty, so one key
+ * in the default slot is all that is ever required.
+ */
+export const KEY_SLOTS = [
+  'default',
+  'goals',
+  'agent',
+  'scenes',
+  'prompts'
+] as const
+
+export type KeySlot = (typeof KEY_SLOTS)[number]
+
+export const KEY_SLOT_LABEL: Record<KeySlot, { label: string; hint: string }> = {
+  default: {
+    label: 'Default',
+    hint: 'Used by everything below that has no key of its own'
+  },
+  goals: { label: 'Goals planning', hint: 'Curriculum breakdown and subtopics' },
+  agent: { label: 'Day agent', hint: 'The assistant on each day card' },
+  scenes: {
+    label: 'Scene planning',
+    hint: 'Storyboard breakdowns and style sorting'
+  },
+  prompts: { label: 'Prompt writing', hint: 'Per-scene generation prompts' }
+}
+
 /* ------------------------------------------------------------ reminders */
 
 /**
@@ -829,6 +1020,14 @@ export interface Storyboard {
   title: string
   /** The project this board belongs to, when it belongs to one. */
   projectId: string | null
+  /**
+   * The creative brief and visual style, rendered on the canvas as the Brief
+   * node. They live on the board rather than in a node table so that there is
+   * no row to delete — the brief cannot be removed, because it was never a
+   * separate thing in the first place.
+   */
+  brief: string
+  visualStyle: string
   color: GoalColor
   sortIndex: number
   createdAt: string
@@ -838,7 +1037,10 @@ export type NewStoryboard = Pick<Storyboard, 'title'> &
   Partial<Pick<Storyboard, 'projectId' | 'color'>>
 
 export type StoryboardPatch = Partial<
-  Pick<Storyboard, 'title' | 'projectId' | 'color' | 'sortIndex'>
+  Pick<
+    Storyboard,
+    'title' | 'projectId' | 'brief' | 'visualStyle' | 'color' | 'sortIndex'
+  >
 >
 
 /**
@@ -860,6 +1062,11 @@ export interface StoryFrame {
   y: number
   w: number
   h: number
+  /**
+   * Generation length in seconds, always one of OMNI_DURATIONS. `null` means no
+   * duration has been decided yet, which is a different thing from any number.
+   */
+  durationSec: number | null
   color: GoalColor
   sortIndex: number
   createdAt: string
@@ -871,9 +1078,294 @@ export type NewStoryFrame = Pick<StoryFrame, 'boardId'> &
 export type StoryFramePatch = Partial<
   Pick<
     StoryFrame,
-    'title' | 'description' | 'prompt' | 'x' | 'y' | 'w' | 'h' | 'color' | 'sortIndex'
+    | 'title'
+    | 'description'
+    | 'prompt'
+    | 'x'
+    | 'y'
+    | 'w'
+    | 'h'
+    | 'durationSec'
+    | 'color'
+    | 'sortIndex'
   >
 >
+
+/**
+ * Default size of a new scene card.
+ *
+ * Shared rather than duplicated: the canvas and the DB layer used to carry their
+ * own numbers and disagreed (300x240 against 280x200), which stayed invisible
+ * only while every frame was born from a double-click on the canvas.
+ */
+export const FRAME_W = 300
+export const FRAME_H = 240
+
+/**
+ * The generation lengths the Omni model supports, in seconds.
+ *
+ * One array, shared by the main process that validates a duration and the
+ * renderer that builds the dropdown, so the two can never disagree about what a
+ * legal length is. Changing what the model supports is a change to this line.
+ */
+export const OMNI_DURATIONS = [5, 10] as const
+
+export type OmniDuration = (typeof OMNI_DURATIONS)[number]
+
+export const isOmniDuration = (value: unknown): value is OmniDuration =>
+  (OMNI_DURATIONS as readonly number[]).includes(value as number)
+
+/**
+ * Snap an arbitrary number to the nearest supported duration.
+ *
+ * Used on the way out of the model: a generator told to pick from an enum will
+ * occasionally return 7 anyway, and a 7-second scene is not something that can
+ * be rendered. Nearest is kinder than rejecting the whole plan.
+ */
+export function snapDuration(value: number): OmniDuration {
+  return OMNI_DURATIONS.reduce((best, d) =>
+    Math.abs(d - value) < Math.abs(best - value) ? d : best
+  )
+}
+
+/* --------------------------------------------------- storyboard references */
+
+/**
+ * A list of reference material, drawn as a container node on the canvas.
+ *
+ * Its rows are the connection points: each item can be wired to any number of
+ * scene cards, which is what makes "these three plates belong to shot 4" a fact
+ * the board holds rather than something you remember.
+ */
+export interface StoryList {
+  id: string
+  boardId: string
+  title: string
+  x: number
+  y: number
+  w: number
+  h: number
+  color: GoalColor
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewStoryList = Pick<StoryList, 'boardId'> &
+  Partial<Omit<StoryList, 'id' | 'boardId' | 'createdAt'>>
+
+export type StoryListPatch = Partial<
+  Pick<StoryList, 'title' | 'x' | 'y' | 'w' | 'h' | 'color' | 'sortIndex'>
+>
+
+/**
+ * The custom scheme that serves linked reference media.
+ *
+ * Shared so the renderer builds the same URLs the main-process handler answers,
+ * and so the CSP string and the URL builder cannot drift apart. See
+ * src/main/services/media.ts and src/renderer/src/lib/media.ts.
+ */
+export const MEDIA_SCHEME = 'deck-media'
+
+export const MEDIA_KINDS = ['image', 'video'] as const
+
+export type MediaKind = (typeof MEDIA_KINDS)[number]
+
+/**
+ * Extensions the reference picker offers, by kind.
+ *
+ * Not a security boundary — the protocol handler serves whatever path the row
+ * holds regardless — just the set worth showing in a file dialog, and the map
+ * used to decide which kind a chosen file is.
+ */
+export const MEDIA_EXTENSIONS: Record<MediaKind, readonly string[]> = {
+  image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'heic', 'bmp'],
+  video: ['mp4', 'mov', 'm4v', 'webm', 'avi', 'mkv']
+}
+
+/** The kind a path looks like, or null if it is not media we display. */
+export function mediaKindFor(path: string): MediaKind | null {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  for (const kind of MEDIA_KINDS) {
+    if (MEDIA_EXTENSIONS[kind].includes(ext)) return kind
+  }
+  return null
+}
+
+/**
+ * One row in a reference list.
+ *
+ * `mediaPath` is an absolute path to a file this app does not own and never
+ * copies. That is a deliberate trade: no duplication and no import wait, at the
+ * cost of a reference that dies if the file moves. `missing` is computed on read
+ * rather than stored, because a stored flag would be wrong the moment the file
+ * came back.
+ */
+export interface StoryListItem {
+  id: string
+  listId: string
+  label: string
+  mediaPath: string | null
+  mediaKind: MediaKind | null
+  /** Small JPEG data URI generated at import; null until then, or if it failed. */
+  thumb: string | null
+  /** Computed per read: the path no longer resolves to a file on disk. */
+  missing: boolean
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewStoryListItem = Pick<StoryListItem, 'listId'> &
+  Partial<Omit<StoryListItem, 'id' | 'listId' | 'missing' | 'createdAt'>>
+
+export type StoryListItemPatch = Partial<
+  Pick<
+    StoryListItem,
+    'label' | 'mediaPath' | 'mediaKind' | 'thumb' | 'sortIndex'
+  >
+>
+
+/** A wire from a reference item to a scene card. */
+export interface StoryFrameRef {
+  frameId: string
+  itemId: string
+  createdAt: string
+}
+
+/**
+ * A reference wired to the brief itself.
+ *
+ * Keyed by board id because the brief is the board — there is exactly one per
+ * board and it has no id of its own. A brief ref informs every scene's prompt;
+ * a frame ref informs only its scene's.
+ */
+export interface StoryBriefRef {
+  boardId: string
+  itemId: string
+  createdAt: string
+}
+
+/* --------------------------------------------------------- video styles */
+
+/** One freeform dimension the named fields do not cover. */
+export interface StyleExtra {
+  key: string
+  value: string
+}
+
+/**
+ * A saved look: how the thing is shot, not what happens in it.
+ *
+ * The named fields are the dimensions worth assembling in a fixed order when
+ * building a prompt — a lens has to read as a lens. `extras` is the escape hatch,
+ * so a dimension nobody anticipated does not need a migration.
+ *
+ * Styles are board-independent: the library outlives any board that used it.
+ */
+export interface VideoStyle {
+  id: string
+  name: string
+  videoStyle: string
+  camera: string
+  lens: string
+  grade: string
+  lighting: string
+  filmStock: string
+  aspect: string
+  extras: StyleExtra[]
+  /**
+   * The look as the user described it, in their own words, kept verbatim.
+   * The named fields above can be sorted out of this text by the model; this
+   * is the copy that survives a bad sort.
+   */
+  sourceText: string
+  color: GoalColor
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewVideoStyle = Pick<VideoStyle, 'name'> &
+  Partial<Omit<VideoStyle, 'id' | 'name' | 'createdAt'>>
+
+export type VideoStylePatch = Partial<Omit<VideoStyle, 'id' | 'createdAt'>>
+
+/** The named fields, in the order a prompt should state them. */
+export const STYLE_FIELDS = [
+  { key: 'videoStyle', label: 'Video style', hint: 'gritty urban indie' },
+  { key: 'camera', label: 'Camera', hint: 'handheld, slight roll' },
+  { key: 'lens', label: 'Lens', hint: '35mm anamorphic' },
+  { key: 'grade', label: 'Grade', hint: 'teal-orange, crushed blacks' },
+  { key: 'lighting', label: 'Lighting', hint: 'hard practicals, no fill' },
+  { key: 'filmStock', label: 'Film stock', hint: 'Vision3 500T' },
+  { key: 'aspect', label: 'Aspect', hint: '2.39:1' }
+] as const satisfies readonly {
+  key: keyof VideoStyle
+  label: string
+  hint: string
+}[]
+
+/** A style dropped onto one board's canvas. */
+export interface StoryStyleNode {
+  id: string
+  boardId: string
+  styleId: string
+  x: number
+  y: number
+  createdAt: string
+}
+
+export type NewStoryStyleNode = Pick<StoryStyleNode, 'boardId' | 'styleId'> &
+  Partial<Pick<StoryStyleNode, 'x' | 'y'>>
+
+/* ------------------------------------------------------ scene planning */
+
+/** One scene as the model proposes it. Not yet written anywhere. */
+export interface ScenePlan {
+  title: string
+  description: string
+  prompt: string
+  durationSec: OmniDuration
+}
+
+/**
+ * What the planner proposes, before anything is written.
+ *
+ * Returned from the propose call and handed straight to the approval window. The
+ * split between proposing and applying is deliberate: "nothing is written until
+ * you confirm" is then a property of the IPC surface rather than a promise the UI
+ * is making on its own behalf.
+ */
+export interface ScenePlanProposal {
+  scenes: ScenePlan[]
+  /** What the model was working from, for the approval window to show. */
+  model: string
+  styleName: string | null
+}
+
+/** One accepted change, as the renderer sends it back to be written. */
+export type SceneApply =
+  | { kind: 'update'; frameId: string; scene: ScenePlan }
+  | { kind: 'create'; scene: ScenePlan }
+  | { kind: 'delete'; frameId: string }
+
+/**
+ * Stage two: prompts for scenes that already exist.
+ *
+ * Its own shape rather than a reuse of ScenePlan because identity matters here —
+ * a prompt belongs to one frame by id, not by position, so a board the user
+ * reorders between proposing and applying still gets every prompt on the card it
+ * was written for.
+ */
+export interface PromptPlanProposal {
+  prompts: { frameId: string; prompt: string }[]
+  model: string
+  styleName: string | null
+}
+
+/** One accepted prompt write. Only the prompt column is ever touched. */
+export interface PromptApply {
+  frameId: string
+  prompt: string
+}
 
 /* ------------------------------------------------------------- sections */
 
@@ -883,7 +1375,8 @@ export const SECTIONS = [
   'goals',
   'tracker',
   'storyboards',
-  'stickers'
+  'stickers',
+  'settings'
 ] as const
 
 export type SectionId = (typeof SECTIONS)[number]

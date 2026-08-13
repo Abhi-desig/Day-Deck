@@ -120,7 +120,11 @@ export function DataPanel() {
       {open && (
         <>
           <motion.div
-            className="fixed inset-0 z-[400] bg-canvas/60 backdrop-blur-[2px]"
+            key="backdrop"
+            // no-drag: this reaches y=0, under the title-bar drag strips. Without
+            // it macOS claims the mousedown for a window drag and the top 52px
+            // of the backdrop stops dismissing the panel.
+            className="no-drag fixed inset-0 z-[400] bg-canvas/60 backdrop-blur-[2px]"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -129,7 +133,10 @@ export function DataPanel() {
           />
 
           <motion.aside
-            className="glass fixed inset-y-0 right-0 z-[401] flex w-[420px] flex-col border-l border-white/10 shadow-[-24px_0_60px_-20px_rgb(0_0_0/0.7)]"
+            key="panel"
+            // Same reason, and on the container rather than the close button so
+            // that adding another control up here cannot silently re-break it.
+            className="no-drag glass fixed inset-y-0 right-0 z-[401] flex w-[420px] flex-col border-l border-white/10 shadow-[-24px_0_60px_-20px_rgb(0_0_0/0.7)]"
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}

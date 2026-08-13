@@ -187,7 +187,7 @@ export async function ask(
   }
 
   const text = await askAgent({
-    apiKey: requireApiKey(),
+    apiKey: requireApiKey('agent'),
     model,
     context: renderContext(facts),
     // Trailing turns, and only well-formed ones — the renderer owns this array

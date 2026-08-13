@@ -1,12 +1,24 @@
-import { BrowserWindow, ipcMain, type IpcMainEvent, type WebContents } from 'electron'
+import {
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  shell,
+  type IpcMainEvent,
+  type WebContents
+} from 'electron'
+import { isAbsolute } from 'node:path'
 import { IPC } from '@shared/ipc-contract'
+import { BIN_SOURCES, PROJECT_KINDS, type BinSourceId, type ProjectKind } from '@shared/types'
 import { getDb } from '../db'
+import * as bin from '../services/bin'
 import { openInEditor } from '../services/editor'
+import * as assets from '../services/projectAssets'
 import * as projects from '../services/projects'
 import * as pty from '../services/pty'
 import {
   listDirectory,
   readTextFile,
+  resolveInRoot,
   writeTextFile
 } from '../services/workspace-fs'
 
@@ -31,9 +43,39 @@ function assertPath(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string') throw new Error(`${label} must be a string`)
 }
 
+/**
+ * Absolute source paths for a copy-in.
+ *
+ * The one place in this file where the renderer does name absolute paths, because
+ * the files being filed come from outside every project. They are only ever read
+ * from, and the destination is still resolved inside a project root — so the rule
+ * this file enforces still holds for everything that gets written.
+ */
+function assertPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error('paths must be an array')
+  if (value.length > 500) throw new Error('That is too many files at once.')
+  for (const path of value) {
+    if (typeof path !== 'string' || !isAbsolute(path)) {
+      throw new Error('Each path must be absolute')
+    }
+  }
+  return value as string[]
+}
+
 function rootOf(projectId: unknown): string {
   assertId(projectId, 'project id')
   return projects.requireProjectRoot(getDb(), projectId).root
+}
+
+/** The DB has no CHECK on kind by design — this is where the enum lives. */
+function assertKind(value: unknown): ProjectKind {
+  if (
+    typeof value !== 'string' ||
+    !(PROJECT_KINDS as readonly string[]).includes(value)
+  ) {
+    throw new Error(`Not a project kind: ${String(value)}`)
+  }
+  return value as ProjectKind
 }
 
 export function registerWorkspaceIpc(): void {
@@ -81,6 +123,159 @@ export function registerWorkspaceIpc(): void {
     const { root } = projects.requireProjectRoot(getDb(), id)
     return openInEditor(root)
   })
+
+  ipcMain.handle(IPC.projectsAddCreative, (event) =>
+    projects.addCreativeProject(
+      getDb(),
+      BrowserWindow.fromWebContents(event.sender)
+    )
+  )
+
+  ipcMain.handle(IPC.projectsOpenExternal, async (_e, id: unknown) => {
+    assertId(id, 'project id')
+    // Hands the file to LaunchServices. Nothing here decides which application
+    // that is — the file extension and the user's own defaults do.
+    await projects.openCreativeProject(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.projectsCreate, (_e, kind: unknown, name: unknown) => {
+    const projectKind = assertKind(kind)
+    if (typeof name !== 'string') throw new Error('name must be a string')
+
+    const added = projects.createProject(getDb(), projectKind, name)
+    // Composed here on purpose: createProject and createTemplateFolders are
+    // deliberately not composed in the service layer (circular import), and a
+    // duplicate already has whatever folders it has.
+    if (!added.duplicate) {
+      assets.createTemplateFolders(getDb(), added.project.id, projectKind)
+    }
+    return added
+  })
+
+  ipcMain.handle(IPC.projectsHomes, () => projects.projectHomes(getDb()))
+
+  ipcMain.handle(IPC.projectsPickHome, (event, kind: unknown) =>
+    projects.pickProjectHome(
+      getDb(),
+      assertKind(kind),
+      BrowserWindow.fromWebContents(event.sender)
+    )
+  )
+
+  /* ----------------------------------------------------------- folders */
+
+  ipcMain.handle(IPC.foldersList, (_e, projectId: unknown) => {
+    assertId(projectId, 'project id')
+    return assets.listFolders(getDb(), projectId)
+  })
+
+  ipcMain.handle(
+    IPC.foldersCreate,
+    (_e, projectId: unknown, parentId: unknown, name: unknown) => {
+      assertId(projectId, 'project id')
+      if (parentId != null) assertId(parentId, 'parent folder id')
+      if (typeof name !== 'string') throw new Error('name must be a string')
+      return assets.createFolder(
+        getDb(),
+        projectId,
+        (parentId as string | null) ?? null,
+        name
+      )
+    }
+  )
+
+  ipcMain.handle(IPC.foldersRename, (_e, id: unknown, name: unknown) => {
+    assertId(id, 'folder id')
+    if (typeof name !== 'string') throw new Error('name must be a string')
+    return assets.renameFolder(getDb(), id, name)
+  })
+
+  ipcMain.handle(IPC.foldersRemove, (_e, id: unknown) => {
+    assertId(id, 'folder id')
+    // Forgets the folder. The directory and everything in it stays.
+    assets.removeFolder(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.foldersFileAssets, (_e, id: unknown, paths: unknown) => {
+    assertId(id, 'folder id')
+    return assets.fileAssets(getDb(), id, assertPaths(paths))
+  })
+
+  ipcMain.handle(IPC.foldersPickAssets, async (event, id: unknown) => {
+    assertId(id, 'folder id')
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const options = {
+      title: 'Add files to this folder',
+      buttonLabel: 'Add',
+      properties: ['openFile' as const, 'multiSelections' as const]
+    }
+    const result = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+
+    if (result.canceled || result.filePaths.length === 0) return null
+    return assets.fileAssets(getDb(), id, result.filePaths)
+  })
+
+  ipcMain.handle(IPC.foldersReveal, (_e, id: unknown) => {
+    assertId(id, 'folder id')
+    const folder = assets.getFolder(getDb(), id)
+    const { root } = projects.requireProjectRoot(getDb(), folder.projectId)
+    shell.showItemInFolder(resolveInRoot(root, folder.relPath))
+  })
+
+  ipcMain.handle(IPC.foldersListAll, () => assets.listAllFolders(getDb()))
+
+  /* ------------------------------------------------------------ the bin */
+
+  ipcMain.handle(IPC.binList, (_e, source: unknown) => {
+    if (
+      typeof source !== 'string' ||
+      !(BIN_SOURCES as readonly string[]).includes(source)
+    ) {
+      throw new Error(`Not a bin source: ${String(source)}`)
+    }
+    return bin.listBin(source as BinSourceId)
+  })
+
+  ipcMain.handle(
+    IPC.binFile,
+    (_e, folderId: unknown, source: unknown, names: unknown, mode: unknown) => {
+      assertId(folderId, 'folder id')
+      if (
+        typeof source !== 'string' ||
+        !(BIN_SOURCES as readonly string[]).includes(source)
+      ) {
+        throw new Error(`Not a bin source: ${String(source)}`)
+      }
+      if (mode !== 'move' && mode !== 'copy') {
+        throw new Error('mode must be "move" or "copy"')
+      }
+      if (
+        !Array.isArray(names) ||
+        names.length > 500 ||
+        names.some((n) => typeof n !== 'string')
+      ) {
+        throw new Error('names must be a list of listed entries')
+      }
+      // The gate that makes the bin a bin: names are resolved inside the
+      // source root by main, so this cannot be pointed anywhere else.
+      const sources = bin.resolveBinPaths(
+        source as BinSourceId,
+        names as string[]
+      )
+      return assets.fileInto(getDb(), folderId, sources, mode)
+    }
+  )
+
+  // Watch both bins for the life of the process, telling every window which
+  // source changed. Nothing is moved by the watcher — it only says "list again".
+  const stopBinWatch = bin.watchBins((source) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC.binChanged, source)
+    }
+  })
+  process.on('exit', stopBinWatch)
 
   /* ------------------------------------------------------------- files */
 
