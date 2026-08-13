@@ -3,11 +3,19 @@ import { app, BrowserWindow, session, shell } from 'electron'
 import { closeDb, getDb } from './db'
 import { registerIpc } from './ipc'
 import { bindPtyLifecycle } from './ipc/workspace'
+import {
+  registerMediaProtocol,
+  registerMediaScheme
+} from './services/media'
 import { killAll as killAllTerminals } from './services/pty'
 import { startReminders, type Reminders } from './services/reminders'
 
 let mainWindow: BrowserWindow | null = null
 let reminders: Reminders | null = null
+
+// Before `whenReady`, deliberately: a privileged scheme registered after the app
+// is ready is registered too late for the renderer to load it as a normal source.
+registerMediaScheme()
 
 /** Bring the window forward — what clicking a notification should do. */
 function focusWindow(): void {
@@ -21,13 +29,55 @@ function focusWindow(): void {
 }
 
 /**
+ * A URL is handed to the OS only when it is the web (or mail).
+ *
+ * `shell.openExternal` with an unvetted string is the classic Electron hole:
+ * `file:`, `smb:` and custom app schemes all launch things. Every navigation
+ * escape in this app funnels through here, so the answer is in one place.
+ */
+function openExternally(url: string): void {
+  if (/^(https?|mailto):/i.test(url)) {
+    void shell.openExternal(url)
+  }
+}
+
+/**
+ * The guards every WebContents gets, current and future.
+ *
+ * Bound in `web-contents-created` rather than on `mainWindow` alone, so a
+ * second window — should one ever exist — is born guarded rather than
+ * remembered about. Nothing in this app should ever navigate away or spawn a
+ * window; any link that wants the outside world goes to the real browser.
+ */
+function guardWebContents(contents: Electron.WebContents): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternally(url)
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (event, url) => {
+    const devUrl = process.env['ELECTRON_RENDERER_URL']
+    if (devUrl && url.startsWith(devUrl)) return
+    event.preventDefault()
+    openExternally(url)
+  })
+  // No frame in this app may attach a webview, whatever a compromised page asks.
+  contents.on('will-attach-webview', (event) => event.preventDefault())
+}
+
+/**
  * Locked down in packaged builds only — Vite's dev server needs inline scripts
  * and a websocket for HMR, and applying this in dev would break the reload loop
- * without making the shipped app any safer.
+ * without making the shipped app any safer. The renderer's own <meta> CSP
+ * covers development; see renderer/index.html.
  *
  * `style-src 'unsafe-inline'` is required: Motion and React both write inline
  * style attributes. `connect-src 'self'` is what keeps this app offline; the
  * Gemini call in Phase 2 happens in the main process, not here.
+ *
+ * `deck-media:` in `img-src`/`media-src` is how linked reference media renders.
+ * It is narrower than it looks and much narrower than allowing `file:`: the
+ * renderer can only address an item id, and the handler will only ever serve a
+ * path some list item already holds. See services/media.ts.
  */
 function applyProductionCsp(): void {
   if (process.env['ELECTRON_RENDERER_URL']) return
@@ -37,7 +87,7 @@ function applyProductionCsp(): void {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'"
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: deck-media:; media-src 'self' deck-media:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'"
         ]
       }
     })
@@ -85,19 +135,6 @@ function createWindow(): void {
     )
   }
 
-  // Nothing in this app should ever navigate away or spawn a window. Any link
-  // that wants the outside world goes to the real browser instead.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const devUrl = process.env['ELECTRON_RENDERER_URL']
-    if (devUrl && url.startsWith(devUrl)) return
-    event.preventDefault()
-    void shell.openExternal(url)
-  })
-
   const devUrl = process.env['ELECTRON_RENDERER_URL']
   if (devUrl) void mainWindow.loadURL(devUrl)
   else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
@@ -114,14 +151,29 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus()
   })
 
+  // Every WebContents — including any created later — is guarded at birth.
+  app.on('web-contents-created', (_event, contents) => {
+    guardWebContents(contents)
+  })
+
   void app.whenReady().then(() => {
     app.setAppUserModelId('com.amber.daydeck')
     applyProductionCsp()
+
+    // This app asks for no browser permissions — camera, mic, geolocation,
+    // notifications-via-page — so every request is denied by default rather
+    // than left to whatever the platform decides.
+    session.defaultSession.setPermissionRequestHandler(
+      (_webContents, _permission, callback) => callback(false)
+    )
 
     // Open the DB up front so a migration failure surfaces at launch rather
     // than on the first IPC call.
     getDb()
     registerIpc()
+    // After getDb(), before the window: the handler reads rows, and the renderer
+    // may request media on its first paint.
+    registerMediaProtocol()
     createWindow()
     reminders = startReminders(getDb(), focusWindow)
 

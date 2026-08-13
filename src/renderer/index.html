@@ -2,6 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Defence in depth alongside the response-header CSP in main/index.ts,
+      and the only CSP that development gets at all. Where this is looser than
+      the header (inline scripts for Vite's React preamble, ws: for HMR), the
+      packaged build still enforces the stricter header — browsers apply the
+      intersection of every policy present.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: deck-media:; media-src 'self' deck-media:; font-src 'self' data:; connect-src 'self' ws: http://localhost:*; object-src 'none'; base-uri 'none'"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Day Deck</title>
   </head>

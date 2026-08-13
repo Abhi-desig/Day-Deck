@@ -1,5 +1,5 @@
-import { useState, type ReactNode, type Ref } from 'react'
-import { AnimatePresence, motion, useReducedMotion, type Variants } from 'motion/react'
+import type { ReactNode, Ref } from 'react'
+import { AnimatePresence, motion, type Variants } from 'motion/react'
 import { EASE_OUT } from '../../lib/motion'
 
 /**
@@ -10,22 +10,21 @@ import { EASE_OUT } from '../../lib/motion'
  * The direction-aware offsets have to live in a named `variants` object:
  * Motion only threads `custom` into variants that are functions, so passing a
  * function straight to `initial`/`exit` would silently do nothing.
+ *
+ * Slide and fade only — deliberately no blur. An earlier version blurred the
+ * panels through the crossfade and tried to strip the filter once the arrival
+ * settled, because *any* non-none filter makes an element a backdrop root and
+ * this wrapper contains every glass surface in a section. That strip could not
+ * work: Motion re-applies its own animated values over the React `style` prop
+ * on each render, so the wrapper kept `filter: blur(0px)` for the lifetime of
+ * the section and the Today slide-overs' `backdrop-filter` sampled an empty
+ * root. Not animating `filter` at all is the only version of this that keeps
+ * `.glass` working — see the note on `.glass` in styles/globals.css.
  */
-const BLURRED: Variants = {
-  enter: (d: number) => ({ opacity: 0, x: 18 * d, filter: 'blur(4px)' }),
-  center: { opacity: 1, x: 0, filter: 'blur(0px)' },
-  exit: (d: number) => ({ opacity: 0, x: -18 * d, filter: 'blur(4px)' })
-}
-
-/**
- * `MotionConfig reducedMotion="user"` drops transform and layout animations,
- * but it leaves `filter` alone — Motion does not class blur as movement. It
- * reads as movement, so the blur has to be opted out of by hand.
- */
-const PLAIN: Variants = {
-  enter: { opacity: 0 },
-  center: { opacity: 1 },
-  exit: { opacity: 0 }
+const SLIDE: Variants = {
+  enter: (d: number) => ({ opacity: 0, x: 18 * d }),
+  center: { opacity: 1, x: 0 },
+  exit: (d: number) => ({ opacity: 0, x: -18 * d })
 }
 
 interface TransitionPanelProps {
@@ -54,9 +53,6 @@ export function TransitionPanel({
 }
 
 /**
- * Split out so `settled` resets on its own: the panel is keyed by index inside
- * AnimatePresence, so each section change mounts a fresh one.
- *
  * `ref` is not decoration. `mode="popLayout"` takes the *outgoing* panel out of
  * the flex flow by measuring it and pinning it to `position: absolute`, and it
  * reaches the element by cloning this component with a ref. A function component
@@ -75,9 +71,6 @@ function Panel({
   children: ReactNode
   ref?: Ref<HTMLDivElement>
 }) {
-  const reduced = useReducedMotion()
-  const [settled, setSettled] = useState(false)
-
   return (
     <motion.div
       ref={ref}
@@ -86,26 +79,13 @@ function Panel({
       // and a plain `h-full` wrapper would collapse them to zero height without
       // rendering anything visibly wrong.
       className="flex h-full w-full min-h-0 flex-col"
-      variants={reduced ? PLAIN : BLURRED}
+      variants={SLIDE}
       initial="enter"
       animate="center"
       exit="exit"
-      transition={{ duration: reduced ? 0 : 0.28, ease: EASE_OUT }}
-      // Only the arrival latches. This fires for the exit too, and latching
-      // there would pin `filter: none` onto a panel that is in the middle of
-      // blurring out — killing the exit half of the crossfade.
-      onAnimationComplete={(definition) => {
-        if (definition === 'center') setSettled(true)
-      }}
-      /*
-       * `none`, not the `blur(0px)` the animation lands on. *Any* non-none
-       * filter makes an element a backdrop root, and this wrapper contains
-       * every glass surface in the app — leaving blur(0px) on it permanently
-       * means the day cards sample this transparent wrapper instead of the
-       * ambient background behind the whole window. Same trap as the deck's
-       * peek blur, one level further out.
-       */
-      style={settled ? { filter: 'none' } : undefined}
+      // `reducedMotion="user"` on the app's MotionConfig drops the x offset by
+      // itself when the OS asks, leaving the plain crossfade.
+      transition={{ duration: 0.28, ease: EASE_OUT }}
     >
       {children}
     </motion.div>

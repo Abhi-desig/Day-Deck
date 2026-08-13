@@ -104,9 +104,14 @@ describe('export', () => {
       'weekly_templates',
       'weekly_seed_log',
       'notify_log',
+      'sticker_folders',
       'stickers',
       'goal_notes',
-      'slots'
+      'tags',
+      'storyboards',
+      'storyboard_frames',
+      'slots',
+      'slot_tags'
     ]) {
       expect(backup.tables[table]).toBeDefined()
     }
@@ -156,7 +161,9 @@ describe('round trip', () => {
     const empty = makeDb()
     const summary = importBackup(db, JSON.stringify(exportBackup(empty, '0.1.0')))
 
-    expect(summary.total).toBe(3) // just the three seeded weekly templates
+    // Everything a fresh database seeds: three weekly templates and the one
+    // starter Amber tag from v6.
+    expect(summary.total).toBe(4)
     expect(curricula.listActive(db)).toHaveLength(0)
     expect(stickers.listStickers(db)).toHaveLength(0)
     expect(slots.listRange(db, '2026-08-01', '2026-08-31')
@@ -308,5 +315,56 @@ describe('refusing a bad file', () => {
     backup.format = 99
 
     expect(() => importBackup(db, JSON.stringify(backup))).toThrow(/format 99/)
+  })
+})
+
+const { homedir } = await import('node:os')
+const { dirname } = await import('node:path')
+
+describe('refusing a project root broad enough to be the disk', () => {
+  let db: TestDb
+  beforeEach(() => {
+    db = makeDb()
+  })
+
+  const home = homedir()
+
+  function backupWithProjectAt(path: string): string {
+    const parsed = exportBackup(db, '0.1.0')
+    parsed.tables.projects = [
+      {
+        id: 'p-evil',
+        name: 'Everything',
+        path,
+        kind: 'code',
+        entry_path: null,
+        color: 'amber',
+        branch: null,
+        last_opened_at: null,
+        pinned: 0,
+        sort_index: 0,
+        created_at: 'now'
+      }
+    ]
+    return JSON.stringify(parsed)
+  }
+
+  it('refuses /, the home directory, and ancestors of home', () => {
+    for (const path of ['/', home, dirname(home)]) {
+      expect(() => importBackup(makeDb(), backupWithProjectAt(path))).toThrow(
+        BackupError
+      )
+    }
+  })
+
+  it('refuses a relative or fake path', () => {
+    expect(() =>
+      importBackup(makeDb(), backupWithProjectAt('not/absolute'))
+    ).toThrow(BackupError)
+  })
+
+  it('accepts an ordinary project folder inside home', () => {
+    const fine = `${home}/code/some-project`
+    expect(() => importBackup(makeDb(), backupWithProjectAt(fine))).not.toThrow()
   })
 })

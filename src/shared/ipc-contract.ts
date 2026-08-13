@@ -2,9 +2,14 @@ import type { DateKey } from './date'
 import type {
   AgentMessage,
   AgentReply,
+  AssetsFiled,
+  AssetsMoved,
   BackupWritten,
+  BinListing,
+  BinSourceId,
   BootstrapResult,
   BriefPreview,
+  FileMode,
   DbInfo,
   ImportSummary,
   CurriculumInput,
@@ -19,22 +24,35 @@ import type {
   GoalNote,
   GoalNotePatch,
   GoalsOverview,
+  KeySlot,
   KeyStatus,
+  MediaKind,
   NewGoalNote,
   NewSlot,
   NewSticker,
   NewStickerFolder,
   NewStoryboard,
   NewStoryFrame,
+  NewStoryList,
+  NewStoryListItem,
+  NewStoryStyleNode,
   NewTag,
+  NewVideoStyle,
   NewWeeklyTemplate,
   NotifyPrefs,
   Project,
   ProjectAdded,
+  ProjectFolder,
+  ProjectHomes,
+  ProjectKind,
+  PromptApply,
+  PromptPlanProposal,
   PtyChunk,
   PtyExit,
   PtySession,
   ReflowPreview,
+  SceneApply,
+  ScenePlanProposal,
   Slot,
   SlotPatch,
   SlotStatus,
@@ -44,13 +62,22 @@ import type {
   StickerPatch,
   Storyboard,
   StoryboardPatch,
+  StoryBriefRef,
   StoryFrame,
   StoryFramePatch,
+  StoryFrameRef,
+  StoryList,
+  StoryListItem,
+  StoryListItemPatch,
+  StoryListPatch,
+  StoryStyleNode,
   SubdivideResult,
   Tag,
   TagOrigin,
   TagPatch,
   TrackerWeek,
+  VideoStyle,
+  VideoStylePatch,
   WeeklyTemplate
 } from './types'
 
@@ -129,6 +156,43 @@ export const IPC = {
   framesCreate: 'frames:create',
   framesUpdate: 'frames:update',
   framesDelete: 'frames:delete',
+  listsList: 'lists:list',
+  listsCreate: 'lists:create',
+  listsUpdate: 'lists:update',
+  listsDelete: 'lists:delete',
+  itemsList: 'items:list',
+  itemsCreate: 'items:create',
+  itemsUpdate: 'items:update',
+  itemsDelete: 'items:delete',
+  refsList: 'refs:list',
+  refsCreate: 'refs:create',
+  refsDelete: 'refs:delete',
+  /** References wired to the brief itself — film-wide, one set per board. */
+  briefRefsList: 'briefRefs:list',
+  briefRefsCreate: 'briefRefs:create',
+  briefRefsDelete: 'briefRefs:delete',
+  /** Opens a native picker for reference media. Returns the chosen paths. */
+  mediaPick: 'media:pick',
+
+  stylesList: 'styles:list',
+  stylesCreate: 'styles:create',
+  stylesUpdate: 'styles:update',
+  stylesDelete: 'styles:delete',
+  stylesDuplicate: 'styles:duplicate',
+  /** Sorts a style's source text into its named fields. Writes nothing. */
+  stylesParse: 'styles:parse',
+  styleNodesList: 'styleNodes:list',
+  styleNodesPlace: 'styleNodes:place',
+  styleNodesMove: 'styleNodes:move',
+  styleNodesRemove: 'styleNodes:remove',
+  /** Asks Gemini for a scene breakdown. Writes nothing. */
+  boardsPlanScenes: 'boards:planScenes',
+  /** Writes the subset of a plan the user approved, in one transaction. */
+  boardsApplyScenePlan: 'boards:applyScenePlan',
+  /** Asks Gemini for a prompt per existing scene. Writes nothing. */
+  boardsPlanPrompts: 'boards:planPrompts',
+  /** Writes the approved prompts — the prompt column only. */
+  boardsApplyPromptPlan: 'boards:applyPromptPlan',
 
   notifyGetPrefs: 'notify:getPrefs',
   notifySetPrefs: 'notify:setPrefs',
@@ -139,6 +203,9 @@ export const IPC = {
   settingsSetKey: 'settings:setKey',
   settingsClearKey: 'settings:clearKey',
   settingsTestKey: 'settings:testKey',
+  /** Gemini calls per minute, per feature slot. */
+  settingsGetRate: 'settings:getRate',
+  settingsSetRate: 'settings:setRate',
   geminiModels: 'gemini:models',
 
   projectsList: 'projects:list',
@@ -147,6 +214,25 @@ export const IPC = {
   projectsSetPinned: 'projects:setPinned',
   projectsReorder: 'projects:reorder',
   projectsRename: 'projects:rename',
+  projectsAddCreative: 'projects:addCreative',
+  projectsOpenExternal: 'projects:openExternal',
+  /** Creates the folder under the kind's home and registers it, templated. */
+  projectsCreate: 'projects:create',
+  projectsHomes: 'projects:homes',
+  projectsPickHome: 'projects:pickHome',
+  foldersList: 'projectFolders:list',
+  foldersCreate: 'projectFolders:create',
+  foldersRename: 'projectFolders:rename',
+  foldersRemove: 'projectFolders:remove',
+  foldersFileAssets: 'projectFolders:fileAssets',
+  foldersPickAssets: 'projectFolders:pickAssets',
+  foldersReveal: 'projectFolders:reveal',
+  foldersListAll: 'projectFolders:listAll',
+  /** The desktop bin: fixed sources, read-only listing, gated filing. */
+  binList: 'bin:list',
+  binFile: 'bin:file',
+  /** Pushed when a watched bin changes. Payload is the source id. */
+  binChanged: 'bin:changed',
   projectsTouch: 'projects:touch',
   projectsOpenInEditor: 'projects:openInEditor',
 
@@ -174,6 +260,14 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC]
 
 /** The exact shape bridged onto `window.deck` by the preload script. */
 export interface DeckApi {
+  /**
+   * Where a dropped file actually is on disk, or null.
+   *
+   * Not an IPC call — it is resolved in the preload, because Electron removed the
+   * non-standard `File.path` and `webUtils` is the only replacement. Needed for
+   * filing dropped assets into a project folder.
+   */
+  pathForFile(file: File): string | null
   system: {
     /** Runs rollover + weekly seeding, then reports what changed. */
     bootstrap(): Promise<BootstrapResult>
@@ -258,8 +352,14 @@ export interface DeckApi {
     /** The whole wall. Expired temp notes are already gone by the time you see it. */
     list(): Promise<Sticker[]>
     create(input: NewSticker): Promise<Sticker>
-    /** Dragging writes through this on drop, not on every frame. */
-    update(id: string, patch: StickerPatch): Promise<Sticker>
+    /**
+     * Dragging writes through this on drop, not on every frame.
+     *
+     * `null` means the note is no longer in the database — swept or restored
+     * away underneath the wall — and the caller should drop it rather than
+     * treat it as a failed write.
+     */
+    update(id: string, patch: StickerPatch): Promise<Sticker | null>
     remove(id: string): Promise<void>
     /** Optional grouping. A note with no folder is the normal case. */
     folders(): Promise<StickerFolder[]>
@@ -301,6 +401,91 @@ export interface DeckApi {
     /** Dragging writes through this on drop, same as the stickers wall. */
     updateFrame(id: string, patch: StoryFramePatch): Promise<StoryFrame>
     removeFrame(id: string): Promise<void>
+
+    /** Reference lists: container nodes whose rows are connection points. */
+    lists(boardId: string): Promise<StoryList[]>
+    createList(input: NewStoryList): Promise<StoryList>
+    updateList(id: string, patch: StoryListPatch): Promise<StoryList>
+    removeList(id: string): Promise<void>
+
+    /**
+     * Every reference item on a board, across all its lists. `missing` on each is
+     * computed at read time from the filesystem, not stored.
+     */
+    items(boardId: string): Promise<StoryListItem[]>
+    createItem(input: NewStoryListItem): Promise<StoryListItem>
+    updateItem(id: string, patch: StoryListItemPatch): Promise<StoryListItem>
+    removeItem(id: string): Promise<void>
+
+    /** The wires from reference items to scene cards. Connecting is idempotent. */
+    refs(boardId: string): Promise<StoryFrameRef[]>
+    connect(frameId: string, itemId: string): Promise<StoryFrameRef>
+    disconnect(frameId: string, itemId: string): Promise<void>
+
+    /**
+     * References wired to the brief itself. Film-wide: a brief ref informs
+     * every scene's prompt where a frame ref informs only its own.
+     */
+    briefRefs(boardId: string): Promise<StoryBriefRef[]>
+    connectBrief(boardId: string, itemId: string): Promise<StoryBriefRef>
+    disconnectBrief(boardId: string, itemId: string): Promise<void>
+
+    /**
+     * Native file picker for reference media. Returns absolute paths and their
+     * kind; nothing is copied, so these are the paths that get stored.
+     */
+    pickMedia(): Promise<{ path: string; kind: MediaKind }[]>
+
+    /**
+     * Ask for a scene breakdown of the board's brief.
+     *
+     * Writes nothing — the proposal comes back for approval, and `applyScenePlan`
+     * is the only thing that touches a row. That split is what makes "nothing
+     * changes until you approve it" true of the API and not just of the UI.
+     */
+    planScenes(boardId: string): Promise<ScenePlanProposal>
+    /** Returns the board's frames as they now stand. */
+    applyScenePlan(boardId: string, applies: SceneApply[]): Promise<StoryFrame[]>
+
+    /**
+     * Stage two: ask for a prompt per existing scene, consistent with the
+     * placed style, the brief and both tiers of references. Writes nothing;
+     * `applyPromptPlan` writes exactly the approved subset, prompt column only.
+     */
+    planPrompts(boardId: string): Promise<PromptPlanProposal>
+    applyPromptPlan(
+      boardId: string,
+      applies: PromptApply[]
+    ): Promise<StoryFrame[]>
+  }
+
+  /**
+   * The style library, and where styles have been placed.
+   *
+   * Its own namespace because the library is board-independent: a look outlives
+   * whichever board it was worked out on.
+   */
+  styles: {
+    list(): Promise<VideoStyle[]>
+    create(input: NewVideoStyle): Promise<VideoStyle>
+    update(id: string, patch: VideoStylePatch): Promise<VideoStyle>
+    remove(id: string): Promise<void>
+    duplicate(id: string): Promise<VideoStyle>
+
+    /**
+     * Sort the style's own source text into the named fields. Only words from
+     * the text may come back, unmentioned fields come back absent, and nothing
+     * is written — the result is a proposed patch for the panel to show.
+     */
+    parse(id: string): Promise<VideoStylePatch>
+
+    /** Placements on one board. */
+    placed(boardId: string): Promise<StoryStyleNode[]>
+    /** Idempotent per board — dropping the same style again moves it. */
+    place(input: NewStoryStyleNode): Promise<StoryStyleNode>
+    move(id: string, x: number, y: number): Promise<StoryStyleNode>
+    /** Takes it off this board. The library keeps it. */
+    unplace(id: string): Promise<void>
   }
   notify: {
     prefs(): Promise<NotifyPrefs>
@@ -311,16 +496,20 @@ export interface DeckApi {
     }>
   }
   settings: {
-    keyStatus(): Promise<KeyStatus>
+    /** Omitting the slot means the default one, everywhere below. */
+    keyStatus(slot?: KeySlot): Promise<KeyStatus>
     /**
      * One-way on purpose. There is no matching getter — the renderer can learn
      * that a key exists, never what it is.
      */
-    setKey(key: string): Promise<KeyStatus>
-    clearKey(): Promise<KeyStatus>
-    /** Validates `key` if given, otherwise the saved one. */
-    testKey(key?: string): Promise<{ models: number }>
+    setKey(key: string, slot?: KeySlot): Promise<KeyStatus>
+    clearKey(slot?: KeySlot): Promise<KeyStatus>
+    /** Validates `key` if given, otherwise the slot's saved (or default) one. */
+    testKey(key?: string, slot?: KeySlot): Promise<{ models: number }>
     models(): Promise<GeminiModel[]>
+    /** Gemini calls allowed per minute, per feature slot. */
+    rate(): Promise<number>
+    setRate(perMinute: number): Promise<number>
   }
   projects: {
     list(): Promise<Project[]>
@@ -334,6 +523,65 @@ export interface DeckApi {
     touch(id: string): Promise<Project>
     /** Reports which route worked, since it is never `code` on PATH here. */
     openInEditor(id: string): Promise<EditorLaunch>
+
+    /** Opens the file picker for a creative project. null means cancelled. */
+    addCreative(): Promise<ProjectAdded | null>
+    /** Hands the entry file to whichever application owns its type. */
+    openExternal(id: string): Promise<void>
+
+    /**
+     * Create a project from nothing: a named folder under the kind's home,
+     * started with the template subfolders. `add` adopts a folder that already
+     * exists; this is the one that makes it.
+     */
+    create(kind: ProjectKind, name: string): Promise<ProjectAdded>
+    /** Where new projects of each kind go. Null until chosen. */
+    homes(): Promise<ProjectHomes>
+    /** Folder picker for one kind's home. null means cancelled. */
+    pickHome(kind: ProjectKind): Promise<ProjectHomes | null>
+
+    /** Folders in the panel, each backed by a real directory. */
+    folders(projectId: string): Promise<ProjectFolder[]>
+    createFolder(
+      projectId: string,
+      parentId: string | null,
+      name: string
+    ): Promise<ProjectFolder>
+    renameFolder(id: string, name: string): Promise<ProjectFolder>
+    /** Forgets the folder. The directory and its contents stay on disk. */
+    removeFolder(id: string): Promise<void>
+    /**
+     * Copies files into a folder's directory. Never moves, never overwrites — a
+     * name that already exists comes back in `skipped`.
+     */
+    fileAssets(folderId: string, paths: string[]): Promise<AssetsFiled>
+    /** Opens a picker, then files whatever was chosen. null means cancelled. */
+    pickAssets(folderId: string): Promise<AssetsFiled | null>
+    /** Reveals a folder's directory in Finder. */
+    revealFolder(id: string): Promise<void>
+    /** Every reachable project's folders at once — the bin's target list. */
+    allFolders(): Promise<ProjectFolder[]>
+  }
+  /**
+   * The desktop bin: Desktop and Downloads, read-only until you approve a
+   * move. Sources are fixed; filing goes through the same trash-safe mover the
+   * folder panel uses, gated so it can only take things *from* the two bins.
+   */
+  bin: {
+    list(source: BinSourceId): Promise<BinListing>
+    /**
+     * Files listed entries into a project folder. Entries are named, never
+     * pathed — main resolves the names inside the source root, so this call
+     * cannot be pointed anywhere but a bin.
+     */
+    file(
+      folderId: string,
+      source: BinSourceId,
+      names: string[],
+      mode: FileMode
+    ): Promise<AssetsMoved>
+    /** Something changed in a bin; list again. Returns an unsubscribe. */
+    onChanged(handler: (source: BinSourceId) => void): () => void
   }
   /**
    * The renderer has no `fs`. It names a project and a path inside it, and main

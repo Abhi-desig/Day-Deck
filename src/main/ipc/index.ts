@@ -1,10 +1,23 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import { app, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { isValidKey, todayKey } from '@shared/date'
 import { IPC } from '@shared/ipc-contract'
-import { GOAL_COLORS, STICKER_COLORS, TAG_COLORS } from '@shared/types'
+import {
+  GOAL_COLORS,
+  KEY_SLOTS,
+  MEDIA_EXTENSIONS,
+  MEDIA_KINDS,
+  OMNI_DURATIONS,
+  STICKER_COLORS,
+  STYLE_FIELDS,
+  TAG_COLORS,
+  isOmniDuration,
+  mediaKindFor
+} from '@shared/types'
 import type {
   AgentMessage,
+  KeySlot,
   CurriculumInput,
   CurriculumProgress,
   GoalNotePatch,
@@ -14,9 +27,16 @@ import type {
   NewStickerFolder,
   NewStoryboard,
   NewStoryFrame,
+  NewStoryList,
+  NewStoryListItem,
+  NewStoryStyleNode,
   NewTag,
+  NewVideoStyle,
   NewWeeklyTemplate,
   NotifyPrefs,
+  PromptApply,
+  SceneApply,
+  ScenePlan,
   SlotPatch,
   SlotStatus,
   Sticker,
@@ -24,8 +44,11 @@ import type {
   StickerPatch,
   StoryboardPatch,
   StoryFramePatch,
+  StoryListItemPatch,
+  StoryListPatch,
   TagOrigin,
-  TagPatch
+  TagPatch,
+  VideoStylePatch
 } from '@shared/types'
 import { dbPath, getDb } from '../db'
 import { MIGRATIONS } from '../db/migrations'
@@ -33,6 +56,7 @@ import * as notes from '../db/notes'
 import * as slots from '../db/slots'
 import * as stickers from '../db/stickers'
 import * as storyboards from '../db/storyboards'
+import * as styles from '../db/styles'
 import * as tags from '../db/tags'
 import * as weekly from '../db/weekly'
 import * as agent from '../services/agent'
@@ -41,9 +65,11 @@ import { bootstrap } from '../services/bootstrap'
 import { launchAtLoginEnabled, setLaunchAtLogin } from '../services/launch'
 import * as curriculum from '../services/curriculum'
 import * as notify from '../services/notify'
+import * as storyboardPlan from '../services/storyboard'
 import * as tracker from '../services/tracker'
 import { checkReminders } from '../services/reminders'
 import { listModels, testConnection } from '../services/gemini'
+import * as rateLimit from '../services/rate-limit'
 import {
   clearApiKey,
   keyStatus,
@@ -57,6 +83,19 @@ import { registerWorkspaceIpc } from './workspace'
  * validating here keeps a renderer bug from writing rows that violate the
  * schema's CHECK constraints and blow up much further from the cause.
  */
+/** Key slots arrive over IPC as strings; unknown ones are refused, and an
+    omitted slot means the default one. */
+function assertSlot(value: unknown): KeySlot {
+  if (value === undefined || value === null) return 'default'
+  if (
+    typeof value !== 'string' ||
+    !(KEY_SLOTS as readonly string[]).includes(value)
+  ) {
+    throw new Error(`Not a key slot: ${String(value)}`)
+  }
+  return value as KeySlot
+}
+
 function assertKey(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || !isValidKey(value)) {
     throw new Error(`${label} must be a YYYY-MM-DD date, got ${String(value)}`)
@@ -163,6 +202,7 @@ export function registerIpc(): void {
     IPC.curriculumGenerate,
     async (event: IpcMainInvokeEvent, input: CurriculumInput) => {
       validateCurriculumInput(input)
+      rateLimit.takeToken(getDb(), 'goals')
 
       // A large curriculum can take a minute or more. Streaming phases back
       // keeps the UI honest about what is happening instead of showing an
@@ -214,6 +254,7 @@ export function registerIpc(): void {
     IPC.curriculumSubdivide,
     async (event: IpcMainInvokeEvent, id: unknown) => {
       assertId(id, 'goal id')
+      rateLimit.takeToken(getDb(), 'goals')
 
       const send = (update: CurriculumProgress): void => {
         if (!event.sender.isDestroyed()) {
@@ -275,6 +316,7 @@ export function registerIpc(): void {
       if (typeof question !== 'string' || !question.trim()) {
         throw new Error('Ask a question first.')
       }
+      rateLimit.takeToken(getDb(), 'agent')
       return agent.ask(
         getDb(),
         date,
@@ -505,6 +547,221 @@ export function registerIpc(): void {
     storyboards.deleteFrame(getDb(), id)
   })
 
+  ipcMain.handle(IPC.listsList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return storyboards.listLists(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.listsCreate, (_e, input: NewStoryList) => {
+    assertId(input?.boardId, 'board id')
+    validateListPatch(input ?? {})
+    return storyboards.createList(getDb(), input)
+  })
+
+  ipcMain.handle(IPC.listsUpdate, (_e, id: unknown, patch: StoryListPatch) => {
+    assertId(id, 'list id')
+    validateListPatch(patch ?? {})
+    return storyboards.updateList(getDb(), id, patch ?? {})
+  })
+
+  ipcMain.handle(IPC.listsDelete, (_e, id: unknown) => {
+    assertId(id, 'list id')
+    storyboards.deleteList(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.itemsList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return storyboards.listItems(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.itemsCreate, (_e, input: NewStoryListItem) => {
+    assertId(input?.listId, 'list id')
+    validateListItemPatch(input ?? {})
+    return storyboards.createItem(getDb(), input)
+  })
+
+  ipcMain.handle(
+    IPC.itemsUpdate,
+    (_e, id: unknown, patch: StoryListItemPatch) => {
+      assertId(id, 'reference id')
+      validateListItemPatch(patch ?? {})
+      return storyboards.updateItem(getDb(), id, patch ?? {})
+    }
+  )
+
+  ipcMain.handle(IPC.itemsDelete, (_e, id: unknown) => {
+    assertId(id, 'reference id')
+    storyboards.deleteItem(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.refsList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return storyboards.listRefs(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.refsCreate, (_e, frameId: unknown, itemId: unknown) => {
+    assertId(frameId, 'frame id')
+    assertId(itemId, 'reference id')
+    return storyboards.createRef(getDb(), frameId, itemId)
+  })
+
+  ipcMain.handle(IPC.refsDelete, (_e, frameId: unknown, itemId: unknown) => {
+    assertId(frameId, 'frame id')
+    assertId(itemId, 'reference id')
+    storyboards.deleteRef(getDb(), frameId, itemId)
+  })
+
+  ipcMain.handle(IPC.briefRefsList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return storyboards.listBriefRefs(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.briefRefsCreate, (_e, boardId: unknown, itemId: unknown) => {
+    assertId(boardId, 'board id')
+    assertId(itemId, 'reference id')
+    return storyboards.createBriefRef(getDb(), boardId, itemId)
+  })
+
+  ipcMain.handle(IPC.briefRefsDelete, (_e, boardId: unknown, itemId: unknown) => {
+    assertId(boardId, 'board id')
+    assertId(itemId, 'reference id')
+    storyboards.deleteBriefRef(getDb(), boardId, itemId)
+  })
+
+  ipcMain.handle(IPC.mediaPick, async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Add reference media',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        {
+          name: 'Images and video',
+          extensions: [...MEDIA_EXTENSIONS.image, ...MEDIA_EXTENSIONS.video]
+        },
+        { name: 'Images', extensions: [...MEDIA_EXTENSIONS.image] },
+        { name: 'Video', extensions: [...MEDIA_EXTENSIONS.video] }
+      ]
+    })
+    if (result.canceled) return []
+
+    // A filter in the dialog is a suggestion, not a guarantee — "All Files" is
+    // always reachable — so the kind is decided here rather than trusted.
+    return result.filePaths.flatMap((path) => {
+      const kind = mediaKindFor(path)
+      return kind ? [{ path, kind }] : []
+    })
+  })
+
+  /* ------------------------------------------------------ scene planning */
+
+  ipcMain.handle(IPC.boardsPlanScenes, async (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    rateLimit.takeToken(getDb(), 'scenes')
+    // Reads and asks; writes nothing. See services/storyboard.ts.
+    return storyboardPlan.propose(getDb(), boardId)
+  })
+
+  ipcMain.handle(
+    IPC.boardsApplyScenePlan,
+    (_e, boardId: unknown, applies: unknown) => {
+      assertId(boardId, 'board id')
+      return storyboardPlan.apply(getDb(), boardId, validateApplies(applies))
+    }
+  )
+
+  ipcMain.handle(IPC.boardsPlanPrompts, async (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    rateLimit.takeToken(getDb(), 'prompts')
+    // Reads and asks; writes nothing. Same contract as planScenes.
+    return storyboardPlan.proposePrompts(getDb(), boardId)
+  })
+
+  ipcMain.handle(
+    IPC.boardsApplyPromptPlan,
+    (_e, boardId: unknown, applies: unknown) => {
+      assertId(boardId, 'board id')
+      return storyboardPlan.applyPrompts(
+        getDb(),
+        boardId,
+        validatePromptApplies(applies)
+      )
+    }
+  )
+
+  /* ------------------------------------------------------------- styles */
+
+  ipcMain.handle(IPC.stylesList, () => styles.listStyles(getDb()))
+
+  ipcMain.handle(IPC.stylesCreate, (_e, input: NewVideoStyle) => {
+    if (!input || typeof input !== 'object') throw new Error('Missing style')
+    validateStyleName(input.name)
+    validateStylePatch(input)
+    return styles.createStyle(getDb(), input)
+  })
+
+  ipcMain.handle(IPC.stylesUpdate, (_e, id: unknown, patch: VideoStylePatch) => {
+    assertId(id, 'style id')
+    if (patch?.name !== undefined) validateStyleName(patch.name)
+    validateStylePatch(patch ?? {})
+    return styles.updateStyle(getDb(), id, patch ?? {})
+  })
+
+  ipcMain.handle(IPC.stylesDelete, (_e, id: unknown) => {
+    assertId(id, 'style id')
+    styles.deleteStyle(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.stylesDuplicate, (_e, id: unknown) => {
+    assertId(id, 'style id')
+    return styles.duplicateStyle(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.stylesParse, async (_e, id: unknown) => {
+    assertId(id, 'style id')
+    rateLimit.takeToken(getDb(), 'scenes')
+    // Reads and asks; writes nothing. The ordinary styles:update call is what
+    // writes whatever the user keeps of the result.
+    return storyboardPlan.parseStyle(getDb(), id)
+  })
+
+  ipcMain.handle(IPC.styleNodesList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return styles.listStyleNodes(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.styleNodesPlace, (_e, input: NewStoryStyleNode) => {
+    assertId(input?.boardId, 'board id')
+    assertId(input?.styleId, 'style id')
+    for (const axis of ['x', 'y'] as const) {
+      const value = input[axis]
+      if (value === undefined) continue
+      if (!Number.isFinite(value) || Math.abs(value) > MAX_CANVAS) {
+        throw new Error(`Style ${axis} is out of range.`)
+      }
+    }
+    return styles.placeStyle(getDb(), input)
+  })
+
+  ipcMain.handle(
+    IPC.styleNodesMove,
+    (_e, id: unknown, x: unknown, y: unknown) => {
+      assertId(id, 'style placement id')
+      for (const value of [x, y]) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          throw new Error('Style position has to be a number.')
+        }
+        if (Math.abs(value) > MAX_CANVAS) {
+          throw new Error('Style position is out of range.')
+        }
+      }
+      return styles.moveStyleNode(getDb(), id, x as number, y as number)
+    }
+  )
+
+  ipcMain.handle(IPC.styleNodesRemove, (_e, id: unknown) => {
+    assertId(id, 'style placement id')
+    styles.removeStyleNode(getDb(), id)
+  })
+
   /* ---------------------------------------------------------- tracker */
 
   ipcMain.handle(IPC.trackerWeek, (_e, anchor: unknown) => {
@@ -534,26 +791,45 @@ export function registerIpc(): void {
 
   /* --------------------------------------------------------- settings */
 
-  ipcMain.handle(IPC.settingsKeyStatus, () => keyStatus())
+  ipcMain.handle(IPC.settingsKeyStatus, (_e, slot: unknown) =>
+    keyStatus(assertSlot(slot))
+  )
 
-  ipcMain.handle(IPC.settingsSetKey, (_e, key: unknown) => {
+  ipcMain.handle(IPC.settingsSetKey, (_e, key: unknown, slot: unknown) => {
     if (typeof key !== 'string') throw new Error('API key must be a string')
-    setApiKey(key)
-    return keyStatus()
+    const which = assertSlot(slot)
+    setApiKey(key, which)
+    return keyStatus(which)
   })
 
-  ipcMain.handle(IPC.settingsClearKey, () => {
-    clearApiKey()
-    return keyStatus()
+  ipcMain.handle(IPC.settingsClearKey, (_e, slot: unknown) => {
+    const which = assertSlot(slot)
+    clearApiKey(which)
+    return keyStatus(which)
   })
 
-  ipcMain.handle(IPC.settingsTestKey, async (_e, key: unknown) => {
+  ipcMain.handle(IPC.settingsTestKey, async (_e, key: unknown, slot: unknown) => {
+    rateLimit.takeToken(getDb(), 'default')
     const candidate =
-      typeof key === 'string' && key.trim() ? key.trim() : requireApiKey()
+      typeof key === 'string' && key.trim()
+        ? key.trim()
+        : requireApiKey(assertSlot(slot))
     return { models: await testConnection(candidate) }
   })
 
-  ipcMain.handle(IPC.geminiModels, async () => listModels(requireApiKey()))
+  ipcMain.handle(IPC.geminiModels, async () => {
+    rateLimit.takeToken(getDb(), 'default')
+    return listModels(requireApiKey())
+  })
+
+  ipcMain.handle(IPC.settingsGetRate, () => rateLimit.ratePerMinute(getDb()))
+
+  ipcMain.handle(IPC.settingsSetRate, (_e, perMinute: unknown) => {
+    if (typeof perMinute !== 'number') {
+      throw new Error('The rate has to be a number of calls per minute.')
+    }
+    return rateLimit.setRatePerMinute(getDb(), perMinute)
+  })
 
   /* -------------------------------- projects, editor files and terminals */
 
@@ -600,15 +876,14 @@ function validateCurriculumInput(input: CurriculumInput): void {
 
 /** Wall coordinates. Generous, but not "lost somewhere at x = 1e9". */
 const MAX_COORD = 20_000
-const MAX_STICKER_BODY = 2_000
 
 function validateStickerPatch(patch: StickerPatch): void {
+  // Deliberately no length ceiling on the body. A sticker is wherever a thought
+  // landed, and a cap only ever truncates the long one you needed. The card has
+  // a fixed footprint and scrolls, so length costs nothing on the wall.
   if (patch.body !== undefined) {
     if (typeof patch.body !== 'string' || !patch.body.trim()) {
       throw new Error('A sticker needs something written on it.')
-    }
-    if (patch.body.length > MAX_STICKER_BODY) {
-      throw new Error(`A sticker has to be under ${MAX_STICKER_BODY} characters.`)
     }
   }
   if (
@@ -763,11 +1038,252 @@ function validateFramePatch(patch: StoryFramePatch): void {
       throw new Error(`Frame ${side} is out of range.`)
     }
   }
+  // null is meaningful — it is how a scene goes back to having no decided
+  // duration — so only a non-null value has to be a length the model supports.
+  if (patch.durationSec != null && !isOmniDuration(patch.durationSec)) {
+    throw new Error(
+      `A scene has to be ${OMNI_DURATIONS.join(' or ')} seconds long.`
+    )
+  }
   if (
     patch.color !== undefined &&
     !(GOAL_COLORS as readonly string[]).includes(patch.color)
   ) {
     throw new Error(`Unknown frame colour: ${String(patch.color)}`)
+  }
+}
+
+function validateListPatch(patch: StoryListPatch): void {
+  if (patch.title !== undefined) {
+    if (typeof patch.title !== 'string') {
+      throw new Error('A list title has to be text.')
+    }
+    if (patch.title.length > MAX_NAME) {
+      throw new Error(`A list title has to be under ${MAX_NAME} characters.`)
+    }
+  }
+  for (const axis of ['x', 'y'] as const) {
+    const value = patch[axis]
+    if (value === undefined) continue
+    if (!Number.isFinite(value) || Math.abs(value) > MAX_CANVAS) {
+      throw new Error(`List ${axis} is out of range.`)
+    }
+  }
+  for (const side of ['w', 'h'] as const) {
+    const value = patch[side]
+    if (value === undefined) continue
+    if (!Number.isFinite(value) || value < 80 || value > 4_000) {
+      throw new Error(`List ${side} is out of range.`)
+    }
+  }
+  if (
+    patch.color !== undefined &&
+    !(GOAL_COLORS as readonly string[]).includes(patch.color)
+  ) {
+    throw new Error(`Unknown list colour: ${String(patch.color)}`)
+  }
+}
+
+/**
+ * A generated poster frame, not an image library.
+ *
+ * The ceiling is deliberately low: these are 320px JPEGs and every one of them is
+ * read back on every board load. Something megabytes long arriving here means the
+ * renderer got its encoding wrong, and storing it would make the board slow in a
+ * way that is hard to trace back to here.
+ */
+const MAX_THUMB = 96 * 1024
+
+function validateListItemPatch(patch: StoryListItemPatch): void {
+  if (patch.label !== undefined) {
+    if (typeof patch.label !== 'string') {
+      throw new Error('A reference label has to be text.')
+    }
+    if (patch.label.length > MAX_NAME) {
+      throw new Error(`A reference label has to be under ${MAX_NAME} characters.`)
+    }
+  }
+  // null clears the media off an item, so only a non-null path is checked.
+  if (patch.mediaPath != null) {
+    if (typeof patch.mediaPath !== 'string' || !isAbsolute(patch.mediaPath)) {
+      throw new Error('Reference media needs an absolute path.')
+    }
+    if (patch.mediaPath.includes('\0')) {
+      throw new Error('That is not a real path.')
+    }
+    // The stored path is what the deck-media protocol will later serve, so it
+    // is constrained to what that protocol exists to serve: media files. A
+    // renderer asking to link /etc/passwd is refused here, not at read time.
+    if (mediaKindFor(patch.mediaPath) === null) {
+      throw new Error(
+        'Reference media has to be an image or video file the picker offers.'
+      )
+    }
+  }
+  if (patch.mediaKind != null && !MEDIA_KINDS.includes(patch.mediaKind)) {
+    throw new Error(`Unknown media kind: ${String(patch.mediaKind)}`)
+  }
+  if (patch.thumb != null) {
+    if (
+      typeof patch.thumb !== 'string' ||
+      !patch.thumb.startsWith('data:image/')
+    ) {
+      throw new Error('A thumbnail has to be an image data URI.')
+    }
+    if (patch.thumb.length > MAX_THUMB) {
+      throw new Error('That thumbnail is too large.')
+    }
+  }
+}
+
+function validateStyleName(name: unknown): asserts name is string {
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new Error('Give the style a name.')
+  }
+  if (name.length > MAX_NAME) {
+    throw new Error(`A style name has to be under ${MAX_NAME} characters.`)
+  }
+}
+
+/** A style is a description, not an essay — these end up inside every prompt. */
+const MAX_STYLE_FIELD = 400
+const MAX_EXTRAS = 24
+
+function validateStylePatch(patch: VideoStylePatch): void {
+  for (const field of STYLE_FIELDS) {
+    const value = patch[field.key]
+    if (value === undefined) continue
+    if (typeof value !== 'string') {
+      throw new Error(`${field.label} has to be text.`)
+    }
+    if (value.length > MAX_STYLE_FIELD) {
+      throw new Error(`${field.label} has to be under ${MAX_STYLE_FIELD} characters.`)
+    }
+  }
+
+  // Read as unknown deliberately. The parameter's declared type describes what a
+  // well-behaved caller sends, and this function exists precisely because that is
+  // an assumption and not a fact.
+  const extras: unknown = (patch as Record<string, unknown>).extras
+  if (extras !== undefined) {
+    if (!Array.isArray(extras)) {
+      throw new Error('Style extras have to be a list.')
+    }
+    if (extras.length > MAX_EXTRAS) {
+      throw new Error(`A style can have at most ${MAX_EXTRAS} extra settings.`)
+    }
+    for (const extra of extras as unknown[]) {
+      if (!extra || typeof extra !== 'object') {
+        throw new Error('Each style extra needs a name and a value.')
+      }
+      const { key, value } = extra as Record<string, unknown>
+      if (typeof key !== 'string' || typeof value !== 'string') {
+        throw new Error('Each style extra needs a name and a value.')
+      }
+      if (key.length > MAX_NAME || value.length > MAX_STYLE_FIELD) {
+        throw new Error('That style extra is too long.')
+      }
+    }
+  }
+
+  if (patch.sourceText !== undefined) {
+    if (typeof patch.sourceText !== 'string') {
+      throw new Error('The look description has to be text.')
+    }
+    // Longer than a field on purpose: this is the user's own paragraph, the
+    // thing the fields are sorted out of.
+    if (patch.sourceText.length > 4_000) {
+      throw new Error('The look description has to be under 4,000 characters.')
+    }
+  }
+
+  if (
+    patch.color !== undefined &&
+    !(GOAL_COLORS as readonly string[]).includes(patch.color)
+  ) {
+    throw new Error(`Unknown style colour: ${String(patch.color)}`)
+  }
+}
+
+/**
+ * The approved subset of a plan, arriving back to be written.
+ *
+ * Checked field by field rather than trusted, for the same reason every other
+ * handler here is: the renderer is our own code, but this is the process
+ * boundary, and this particular payload ends in DELETE statements.
+ */
+function validateApplies(value: unknown): SceneApply[] {
+  if (!Array.isArray(value)) throw new Error('Missing scene plan')
+  if (value.length > 200) throw new Error('That plan is too large to apply.')
+
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Malformed scene change')
+    }
+    const change = entry as Record<string, unknown>
+
+    if (change.kind === 'delete') {
+      assertId(change.frameId, 'frame id')
+      return { kind: 'delete', frameId: change.frameId }
+    }
+
+    if (change.kind === 'update' || change.kind === 'create') {
+      const scene = validateScene(change.scene)
+      if (change.kind === 'create') return { kind: 'create', scene }
+      assertId(change.frameId, 'frame id')
+      return { kind: 'update', frameId: change.frameId, scene }
+    }
+
+    throw new Error(`Unknown scene change: ${String(change.kind)}`)
+  })
+}
+
+/** Same discipline as validateApplies: this payload ends in UPDATE statements. */
+function validatePromptApplies(value: unknown): PromptApply[] {
+  if (!Array.isArray(value)) throw new Error('Missing prompt plan')
+  if (value.length > 200) throw new Error('That plan is too large to apply.')
+
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Malformed prompt change')
+    }
+    const change = entry as Record<string, unknown>
+    assertId(change.frameId, 'frame id')
+    if (typeof change.prompt !== 'string') {
+      throw new Error('A prompt has to be text.')
+    }
+    if (change.prompt.length > MAX_PROMPT) {
+      throw new Error(`A prompt has to be under ${MAX_PROMPT} characters.`)
+    }
+    return { frameId: change.frameId, prompt: change.prompt }
+  })
+}
+
+function validateScene(value: unknown): ScenePlan {
+  if (!value || typeof value !== 'object') throw new Error('Missing scene')
+  const scene = value as Record<string, unknown>
+
+  for (const field of ['title', 'description', 'prompt'] as const) {
+    const text = scene[field]
+    if (typeof text !== 'string') {
+      throw new Error(`A scene ${field} has to be text.`)
+    }
+    if (text.length > MAX_PROMPT) {
+      throw new Error(`A scene ${field} has to be under ${MAX_PROMPT} characters.`)
+    }
+  }
+
+  if (!isOmniDuration(scene.durationSec)) {
+    throw new Error(
+      `A scene has to be ${OMNI_DURATIONS.join(' or ')} seconds long.`
+    )
+  }
+
+  return {
+    title: scene.title as string,
+    description: scene.description as string,
+    prompt: scene.prompt as string,
+    durationSec: scene.durationSec
   }
 }
 

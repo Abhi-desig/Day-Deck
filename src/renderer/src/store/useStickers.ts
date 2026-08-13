@@ -67,18 +67,45 @@ export const useStickers = create<StickerState>((set, get) => ({
     }
   },
 
+  /*
+   * Every write below reverts *the note it touched*, never a snapshot of the
+   * whole array.
+   *
+   * A snapshot taken before the await is stale by the time it is restored: it
+   * puts back notes deleted while the write was in flight and discards edits
+   * that succeeded. That is what turned one rejected write into a permanently
+   * broken wall — a resurrected note has no row, so its next drag fails, which
+   * restores it again, for ever.
+   */
   async patch(id, patch) {
     // Optimistic: the note is under the user's cursor and should not wait for a
     // round trip to change.
-    const previous = get().stickers
-    set({
-      stickers: previous.map((s) => (s.id === id ? { ...s, ...patch } : s))
-    })
+    const before = get().stickers.find((s) => s.id === id)
+    set((s) => ({
+      stickers: s.stickers.map((x) => (x.id === id ? { ...x, ...patch } : x))
+    }))
     try {
       const saved = await api.stickers.update(id, patch)
-      set((s) => ({ stickers: s.stickers.map((x) => (x.id === id ? saved : x)) }))
+      if (!saved) {
+        // The row is gone. Drop the note rather than restoring it: keeping it
+        // on the wall is what makes the failure repeat on every later write.
+        set((s) => ({
+          stickers: s.stickers.filter((x) => x.id !== id),
+          error: null
+        }))
+        return
+      }
+      set((s) => ({
+        stickers: s.stickers.map((x) => (x.id === id ? saved : x)),
+        error: null
+      }))
     } catch (err) {
-      set({ stickers: previous, error: message(err) })
+      set((s) => ({
+        stickers: before
+          ? s.stickers.map((x) => (x.id === id ? before : x))
+          : s.stickers.filter((x) => x.id !== id),
+        error: message(err)
+      }))
     }
   },
 
@@ -94,12 +121,25 @@ export const useStickers = create<StickerState>((set, get) => ({
   },
 
   async remove(id) {
-    const previous = get().stickers
-    set({ stickers: previous.filter((s) => s.id !== id) })
+    const stickers = get().stickers
+    const index = stickers.findIndex((s) => s.id === id)
+    const before = stickers[index]
+
+    set((s) => ({ stickers: s.stickers.filter((x) => x.id !== id) }))
     try {
       await api.stickers.remove(id)
+      set({ error: null })
     } catch (err) {
-      set({ stickers: previous, error: message(err) })
+      // Back at its old index, not appended: the wall paints in array order, so
+      // appending would quietly move the note above its neighbours.
+      set((s) => {
+        if (!before || s.stickers.some((x) => x.id === id)) {
+          return { error: message(err) }
+        }
+        const next = [...s.stickers]
+        next.splice(Math.min(index, next.length), 0, before)
+        return { stickers: next, error: message(err) }
+      })
     }
   },
 
@@ -115,37 +155,63 @@ export const useStickers = create<StickerState>((set, get) => ({
   },
 
   async patchFolder(id, patch) {
-    const previous = get().folders
-    set({ folders: previous.map((f) => (f.id === id ? { ...f, ...patch } : f)) })
+    const before = get().folders.find((f) => f.id === id)
+    set((s) => ({
+      folders: s.folders.map((f) => (f.id === id ? { ...f, ...patch } : f))
+    }))
     try {
       const saved = await api.stickers.updateFolder(id, patch)
-      set((s) => ({ folders: s.folders.map((f) => (f.id === id ? saved : f)) }))
+      set((s) => ({
+        folders: s.folders.map((f) => (f.id === id ? saved : f)),
+        error: null
+      }))
     } catch (err) {
-      set({ folders: previous, error: message(err) })
+      set((s) => ({
+        folders: before
+          ? s.folders.map((f) => (f.id === id ? before : f))
+          : s.folders.filter((f) => f.id !== id),
+        error: message(err)
+      }))
     }
   },
 
   async removeFolder(id) {
-    const previousFolders = get().folders
-    const previousStickers = get().stickers
+    const folders = get().folders
+    const index = folders.findIndex((f) => f.id === id)
+    const before = folders[index]
+    // Which notes this release actually touched, so a failure can re-file
+    // exactly those and nothing else.
+    const released = get()
+      .stickers.filter((s) => s.folderId === id)
+      .map((s) => s.id)
 
     // Main sets the notes loose via ON DELETE SET NULL. Mirroring that here
     // rather than refetching keeps a note that is on screen from vanishing for
     // a frame and coming back unfiled.
-    set({
-      folders: previousFolders.filter((f) => f.id !== id),
-      stickers: previousStickers.map((s) =>
-        s.folderId === id ? { ...s, folderId: null } : s
+    set((s) => ({
+      folders: s.folders.filter((f) => f.id !== id),
+      stickers: s.stickers.map((x) =>
+        x.folderId === id ? { ...x, folderId: null } : x
       )
-    })
+    }))
 
     try {
       await api.stickers.removeFolder(id)
+      set({ error: null })
     } catch (err) {
-      set({
-        folders: previousFolders,
-        stickers: previousStickers,
-        error: message(err)
+      const affected = new Set(released)
+      set((s) => {
+        const next = [...s.folders]
+        if (before && !next.some((f) => f.id === id)) {
+          next.splice(Math.min(index, next.length), 0, before)
+        }
+        return {
+          folders: next,
+          stickers: s.stickers.map((x) =>
+            affected.has(x.id) ? { ...x, folderId: id } : x
+          ),
+          error: message(err)
+        }
       })
     }
   },

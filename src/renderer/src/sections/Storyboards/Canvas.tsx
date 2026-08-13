@@ -1,247 +1,524 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { motion, useMotionValue } from 'motion/react'
-import type { StoryFrame } from '@shared/types'
-import { cn } from '../../lib/cn'
-import { clamp } from '../../lib/board'
-import { EASE_OUT } from '../../lib/motion'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
+import {
+  Background,
+  BackgroundVariant,
+  ReactFlow,
+  ReactFlowProvider,
+  useEdgesState,
+  useNodesState,
+  useReactFlow,
+  type Connection,
+  type Edge,
+  type IsValidConnection,
+  type NodeChange,
+  type OnNodeDrag
+} from '@xyflow/react'
+// Vite bundles this into the app's own CSS, so it is covered by the existing
+// `style-src 'self' 'unsafe-inline'` and needs no CSP change.
+import '@xyflow/react/dist/style.css'
+import {
+  FRAME_H,
+  FRAME_W,
+  mediaKindFor,
+  type StoryBriefRef,
+  type StoryFrame,
+  type StoryFrameRef,
+  type StoryList,
+  type StoryListItem,
+  type Storyboard
+} from '@shared/types'
+import { api } from '../../lib/api'
+import { buildBoardEdges, buildBoardNodes } from '../../lib/board-graph'
 import { useStoryboards } from '../../store/useStoryboards'
-import { Frame } from './Frame'
+import { useStyles } from '../../store/useStyles'
+import { BriefNode } from './nodes/BriefNode'
+import { ListNode, LIST_MIN_H, LIST_MIN_W } from './nodes/ListNode'
+import { SceneNode } from './nodes/SceneNode'
+import { StyleNode, STYLE_W } from './nodes/StyleNode'
+import {
+  HANDLE,
+  STYLE_DRAG_TYPE,
+  entityId,
+  nodeId,
+  nodeKind,
+  type BoardNode
+} from './nodes/types'
 
 export const ZOOM_MIN = 0.3
 export const ZOOM_MAX = 2.5
-/** One notch of the zoom buttons, and the ceiling on one wheel event. */
-const ZOOM_STEP = 1.15
 
-const FRAME_W = 300
-const FRAME_H = 240
-
+/**
+ * Commands, not state.
+ *
+ * The toolbar needs to tell the canvas to do things — zoom, drop a frame, frame
+ * the brief — but none of those are properties of the section above it. Passing a
+ * handle up keeps the viewport's business inside the canvas.
+ */
 export interface CanvasHandle {
-  /** Drop a frame in the middle of whatever is currently on screen. */
   addAtCentre(): void
   zoomBy(factor: number): void
   reset(): void
 }
 
-interface CanvasProps {
-  boardId: string
-  frames: StoryFrame[]
-  onHandle(handle: CanvasHandle): void
-  onZoom(zoom: number): void
+/** Custom node types. Defined once at module scope — React Flow remounts every
+    node if this object's identity changes between renders. */
+const NODE_TYPES = {
+  brief: BriefNode,
+  list: ListNode,
+  scene: SceneNode,
+  style: StyleNode
 }
 
 /**
- * The infinite surface a board's frames live on.
+ * The storyboard canvas.
  *
- * Pan and zoom are motion values, not React state. The whole point of a canvas
- * is that moving around it is free, and driving a transform through `setState`
- * would re-render every frame on the board sixty times a second while the hand
- * is still moving.
- *
- * The world is `transformOrigin: 0 0` and `translate` *then* `scale`, which is
- * what makes the screen↔world conversion below a two-line affair rather than a
- * matrix inversion.
+ * Pan, zoom, node dragging, resize handles, wire dragging and edge routing are
+ * React Flow's. What is left here is the mapping between the store's rows and the
+ * graph, in both directions — and the one rule that governs the write side: a
+ * gesture writes when it ends, never while it is happening.
  */
-export function Canvas({ boardId, frames, onHandle, onZoom }: CanvasProps) {
+export function Canvas(props: {
+  board: Storyboard
+  frames: StoryFrame[]
+  lists: StoryList[]
+  items: StoryListItem[]
+  refs: StoryFrameRef[]
+  briefRefs: StoryBriefRef[]
+  onHandle(handle: CanvasHandle): void
+  onZoom(zoom: number): void
+  onFocusScene(frameId: string): void
+  onStyleDropped(styleId: string): void
+}) {
+  return (
+    // Provider per board: the viewport, selection and node store all belong to
+    // one board and must not be inherited by the next.
+    <ReactFlowProvider>
+      <Graph {...props} />
+    </ReactFlowProvider>
+  )
+}
+
+function Graph({
+  board,
+  frames,
+  lists,
+  items,
+  refs,
+  briefRefs,
+  onHandle,
+  onZoom,
+  onFocusScene,
+  onStyleDropped
+}: {
+  board: Storyboard
+  frames: StoryFrame[]
+  lists: StoryList[]
+  items: StoryListItem[]
+  refs: StoryFrameRef[]
+  briefRefs: StoryBriefRef[]
+  onHandle(handle: CanvasHandle): void
+  onZoom(zoom: number): void
+  onFocusScene(frameId: string): void
+  onStyleDropped(styleId: string): void
+}) {
   const addFrame = useStoryboards((s) => s.addFrame)
+  const addList = useStoryboards((s) => s.addList)
+  const addItem = useStoryboards((s) => s.addItem)
+  const placeFrame = useStoryboards((s) => s.placeFrame)
+  const placeList = useStoryboards((s) => s.placeList)
+  const removeFrame = useStoryboards((s) => s.removeFrame)
+  const removeList = useStoryboards((s) => s.removeList)
+  const connectRef = useStoryboards((s) => s.connectRef)
+  const disconnectRef = useStoryboards((s) => s.disconnectRef)
+  const connectBriefRef = useStoryboards((s) => s.connectBriefRef)
+  const disconnectBriefRef = useStoryboards((s) => s.disconnectBriefRef)
 
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const panX = useMotionValue(0)
-  const panY = useMotionValue(0)
-  const zoom = useMotionValue(1)
+  const styleLibrary = useStyles((s) => s.styles)
+  const placedStyles = useStyles((s) => s.placed)
+  const placeStyle = useStyles((s) => s.place)
+  const moveStyle = useStyles((s) => s.move)
+  const unplaceStyle = useStyles((s) => s.unplace)
 
-  const [panning, setPanning] = useState(false)
+  const flow = useReactFlow<BoardNode, Edge>()
 
-  /** Screen coordinates (relative to the viewport) → world coordinates. */
-  const toWorld = useCallback(
-    (clientX: number, clientY: number): { x: number; y: number } => {
-      const rect = viewportRef.current?.getBoundingClientRect()
-      const px = clientX - (rect?.left ?? 0)
-      const py = clientY - (rect?.top ?? 0)
-      const scale = zoom.get()
-      return { x: (px - panX.get()) / scale, y: (py - panY.get()) / scale }
+  /* ------------------------------------------------- store -> graph */
+
+  // The mapping itself lives in lib/board-graph.ts, pure and unit-tested —
+  // including the brief node's pointer-events override, which is the kind of
+  // regression this component cannot catch on its own.
+  const derivedNodes = useMemo<BoardNode[]>(
+    () =>
+      buildBoardNodes({
+        board,
+        frames,
+        lists,
+        items,
+        refs,
+        briefRefs,
+        placedStyles,
+        styleLibrary
+      }),
+    [board, frames, lists, items, refs, briefRefs, placedStyles, styleLibrary]
+  )
+
+  const derivedEdges = useMemo<Edge[]>(
+    () =>
+      buildBoardEdges({ board, frames, items, refs, briefRefs, placedStyles }),
+    [board, frames, items, refs, briefRefs, placedStyles]
+  )
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<BoardNode>(derivedNodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(derivedEdges)
+
+  /**
+   * The store is authoritative, so the graph is rebuilt whenever it changes.
+   *
+   * Safe against clobbering a gesture in progress because every gesture writes on
+   * end: by the time a drag's `placeFrame` lands here, the drag is over and the
+   * position arriving back is the one already on screen.
+   */
+  const dragging = useRef(false)
+  useEffect(() => {
+    if (dragging.current) return
+    setNodes(derivedNodes)
+  }, [derivedNodes, setNodes])
+
+  useEffect(() => {
+    setEdges(derivedEdges)
+  }, [derivedEdges, setEdges])
+
+  /* ------------------------------------------------- graph -> store */
+
+  const onNodeDragStart = useCallback(() => {
+    dragging.current = true
+  }, [])
+
+  const onNodeDragStop = useCallback<OnNodeDrag<BoardNode>>(
+    (_event, node) => {
+      dragging.current = false
+      const id = entityId(node.id)
+      // Exactly what is on screen, not a recomputation of it.
+      const rect = {
+        x: node.position.x,
+        y: node.position.y,
+        w: node.measured?.width ?? FRAME_W,
+        h: node.measured?.height ?? FRAME_H
+      }
+      if (node.type === 'scene') void placeFrame(id, rect)
+      if (node.type === 'list') void placeList(id, rect)
+      if (node.type === 'style') void moveStyle(id, rect.x, rect.y)
     },
-    [panX, panY, zoom]
+    [placeFrame, placeList, moveStyle]
   )
 
   /**
-   * Zoom about a fixed point on screen.
+   * A reference may be wired to a scene, or to the brief.
    *
-   * The point under the cursor has to stay under the cursor, or zooming walks
-   * the board out from under you. Solve for the pan that keeps its world
-   * coordinate mapping to the same screen coordinate at the new scale.
+   * The spine is derived and the style attachment is automatic, so the
+   * connections a person can draw by hand are item-to-scene (this shot uses it)
+   * and item-to-brief (the whole film does). Anything else dropped on a handle
+   * is refused rather than silently stored as a wire nothing reads.
    */
-  const zoomAt = useCallback(
-    (factor: number, clientX: number, clientY: number) => {
-      const rect = viewportRef.current?.getBoundingClientRect()
-      const px = clientX - (rect?.left ?? 0)
-      const py = clientY - (rect?.top ?? 0)
-
-      const scale = zoom.get()
-      const next = clamp(scale * factor, ZOOM_MIN, ZOOM_MAX)
-      if (next === scale) return
-
-      const worldX = (px - panX.get()) / scale
-      const worldY = (py - panY.get()) / scale
-
-      zoom.set(next)
-      panX.set(px - worldX * next)
-      panY.set(py - worldY * next)
-      onZoom(next)
-    },
-    [panX, panY, zoom, onZoom]
+  const isValidConnection = useCallback<IsValidConnection>(
+    (connection) =>
+      nodeKind(connection.source) === 'list' &&
+      (nodeKind(connection.target) === 'scene' ||
+        (nodeKind(connection.target) === 'brief' &&
+          connection.targetHandle === HANDLE.briefRefIn)),
+    []
   )
 
-  // Fresh board, fresh view. Without this, switching segments keeps the last
-  // board's pan — and since frames sit wherever they were put, the new board
-  // usually opens on empty space.
-  useEffect(() => {
-    panX.set(0)
-    panY.set(0)
-    zoom.set(1)
-    onZoom(1)
-  }, [boardId, panX, panY, zoom, onZoom])
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.sourceHandle) return
+      // The source handle *is* the item id — see ListNode's Row.
+      if (nodeKind(connection.target) === 'scene') {
+        void connectRef(entityId(connection.target), connection.sourceHandle)
+      }
+      if (
+        nodeKind(connection.target) === 'brief' &&
+        connection.targetHandle === HANDLE.briefRefIn
+      ) {
+        void connectBriefRef(connection.sourceHandle)
+      }
+    },
+    [connectRef, connectBriefRef]
+  )
 
-  const place = useCallback(
-    (world: { x: number; y: number }) => {
+  const onEdgesDelete = useCallback(
+    (deleted: Edge[]) => {
+      for (const edge of deleted) {
+        if (edge.id.startsWith('ref:')) {
+          const [, frameId, itemId] = edge.id.split(':')
+          void disconnectRef(frameId, itemId)
+        }
+        if (edge.id.startsWith('bref:')) {
+          const [, , itemId] = edge.id.split(':')
+          void disconnectBriefRef(itemId)
+        }
+      }
+    },
+    [disconnectRef, disconnectBriefRef]
+  )
+
+  const onNodesDelete = useCallback(
+    (deleted: BoardNode[]) => {
+      for (const node of deleted) {
+        if (node.type === 'scene') void removeFrame(entityId(node.id))
+        if (node.type === 'list') void removeList(entityId(node.id))
+        // Deleting the node takes the style off this board. The library keeps it.
+        if (node.type === 'style') void unplaceStyle(entityId(node.id))
+      }
+    },
+    [removeFrame, removeList, unplaceStyle]
+  )
+
+  /**
+   * Resizing reports through onNodesChange as a dimension change, and the store
+   * only hears about it when the resize ends — NodeResizer's own onResizeEnd,
+   * wired inside each node. This handler just lets React Flow keep its local
+   * dimensions while the drag is live.
+   */
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<BoardNode>[]) => {
+      if (changes.some((c) => c.type === 'dimensions' && c.resizing)) {
+        dragging.current = true
+      }
+      if (changes.some((c) => c.type === 'dimensions' && c.resizing === false)) {
+        dragging.current = false
+      }
+      onNodesChange(changes)
+    },
+    [onNodesChange]
+  )
+
+  /**
+   * Files dropped straight onto the canvas become references.
+   *
+   * Dropped onto a list, they join it; dropped onto empty canvas, a list is
+   * created where they landed to hold them. Items are created serially so
+   * sort_index follows the order the files arrived in, same as attachMedia.
+   * Non-media files are skipped rather than stored as rows nothing can show.
+   */
+  const dropMedia = useCallback(
+    async (
+      paths: string[],
+      at: { x: number; y: number },
+      targetListId: string | null
+    ) => {
+      const media = paths.flatMap((path) => {
+        const kind = mediaKindFor(path)
+        return kind ? [{ path, kind }] : []
+      })
+      if (media.length === 0) return
+
+      let listId = targetListId
+      if (!listId) {
+        const list = await addList({
+          boardId: board.id,
+          title: '',
+          x: Math.round(at.x - LIST_MIN_W / 2),
+          y: Math.round(at.y - LIST_MIN_H / 2)
+        })
+        if (!list) return
+        listId = list.id
+      }
+
+      for (const item of media) {
+        await addItem({
+          listId,
+          label: fileName(item.path),
+          mediaPath: item.path,
+          mediaKind: item.kind
+        })
+      }
+    },
+    [addList, addItem, board.id]
+  )
+
+  /* ------------------------------------------------------- commands */
+
+  const placeAt = useCallback(
+    (position: { x: number; y: number }) => {
       void addFrame({
-        boardId,
-        x: Math.round(world.x - FRAME_W / 2),
-        y: Math.round(world.y - FRAME_H / 2),
+        boardId: board.id,
+        x: Math.round(position.x - FRAME_W / 2),
+        y: Math.round(position.y - FRAME_H / 2),
         w: FRAME_W,
         h: FRAME_H
       })
     },
-    [addFrame, boardId]
+    [addFrame, board.id]
   )
 
-  // Handed up so the toolbar can drive the canvas without the canvas having to
-  // render the toolbar. A ref rather than props because these are commands, not
-  // state.
   useEffect(() => {
     onHandle({
       addAtCentre: () => {
-        const rect = viewportRef.current?.getBoundingClientRect()
-        place(
-          toWorld(
-            (rect?.left ?? 0) + (rect?.width ?? 0) / 2,
-            (rect?.top ?? 0) + (rect?.height ?? 0) / 2
-          )
+        // The middle of the window, converted into world coordinates — which is
+        // the middle of whatever the user is currently looking at.
+        placeAt(
+          flow.screenToFlowPosition({
+            x: window.innerWidth / 2,
+            y: window.innerHeight / 2
+          })
         )
       },
-      zoomBy: (factor) => {
-        const rect = viewportRef.current?.getBoundingClientRect()
-        zoomAt(
-          factor,
-          (rect?.left ?? 0) + (rect?.width ?? 0) / 2,
-          (rect?.top ?? 0) + (rect?.height ?? 0) / 2
-        )
+      zoomBy: (factor: number) => {
+        const { zoom } = flow.getViewport()
+        flow.zoomTo(clampZoom(zoom * factor), { duration: 160 })
       },
       reset: () => {
-        panX.set(0)
-        panY.set(0)
-        zoom.set(1)
-        onZoom(1)
+        // Frame the brief, not the whole graph: the brief is the thing the board
+        // is organised around, so "reset" means put it back in the middle.
+        void flow.fitView({
+          nodes: [{ id: nodeId.brief(board.id) }],
+          duration: 240,
+          maxZoom: 1,
+          padding: 1.4
+        })
       }
     })
-  }, [onHandle, place, toWorld, zoomAt, panX, panY, zoom, onZoom])
-
-  /**
-   * Trackpad and mouse in one handler.
-   *
-   * `ctrlKey` on a wheel event is how macOS reports a pinch — it is synthesised
-   * by the OS and is not the user holding control — so pinch zooms and two
-   * fingers pan, which is what both gestures do everywhere else on the system.
-   */
-  function onWheel(e: React.WheelEvent): void {
-    if (e.ctrlKey || e.metaKey) {
-      // Clamped per event: a hard pinch delivers deltas large enough to jump
-      // the whole zoom range in one frame.
-      const factor = clamp(1 - e.deltaY * 0.01, 1 / ZOOM_STEP, ZOOM_STEP)
-      zoomAt(factor, e.clientX, e.clientY)
-      return
-    }
-    panX.set(panX.get() - e.deltaX)
-    panY.set(panY.get() - e.deltaY)
-  }
-
-  /**
-   * Panning by dragging the background.
-   *
-   * Raw pointer events rather than Motion's `drag`, because the value being
-   * moved is the world's own transform — handing that to a drag gesture would
-   * mean a transform inside a transform, and the two would fight over the same
-   * element.
-   */
-  function onPointerDown(e: React.PointerEvent): void {
-    // A press that lands on a frame belongs to the frame.
-    if ((e.target as HTMLElement).closest('[data-frame]')) return
-    if (e.button !== 0 && e.button !== 1) return
-
-    const startX = e.clientX
-    const startY = e.clientY
-    const originX = panX.get()
-    const originY = panY.get()
-
-    setPanning(true)
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-
-    const move = (event: PointerEvent): void => {
-      panX.set(originX + (event.clientX - startX))
-      panY.set(originY + (event.clientY - startY))
-    }
-    const up = (): void => {
-      setPanning(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      window.removeEventListener('pointercancel', up)
-    }
-
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-    window.addEventListener('pointercancel', up)
-  }
+  }, [flow, onHandle, placeAt, board.id])
 
   return (
-    <div
-      ref={viewportRef}
-      onWheel={onWheel}
-      onPointerDown={onPointerDown}
-      onDoubleClick={(e) => {
-        if ((e.target as HTMLElement).closest('[data-frame]')) return
-        place(toWorld(e.clientX, e.clientY))
+    <ReactFlow<BoardNode, Edge>
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={handleNodesChange}
+      onEdgesChange={onEdgesChange}
+      onNodeDragStart={onNodeDragStart}
+      onNodeDragStop={onNodeDragStop}
+      onNodesDelete={onNodesDelete}
+      onEdgesDelete={onEdgesDelete}
+      onConnect={onConnect}
+      isValidConnection={isValidConnection}
+      onMove={(_e, viewport) => onZoom(viewport.zoom)}
+      onNodeDoubleClick={(_e, node) => {
+        if (node.type === 'scene') onFocusScene(entityId(node.id))
       }}
-      className={cn(
-        'storyboard-grid relative min-h-0 flex-1 overflow-hidden rounded-xl border border-line-soft',
-        panning ? 'cursor-grabbing' : 'cursor-grab'
-      )}
-      role="application"
-      aria-label="Storyboard canvas"
-    >
-      <motion.div
-        className="absolute left-0 top-0 origin-top-left"
-        style={{ x: panX, y: panY, scale: zoom }}
-      >
-        {frames.map((frame) => (
-          <Frame key={frame.id} frame={frame} zoom={zoom} />
-        ))}
-      </motion.div>
+      // dragover must preventDefault or drop never fires at all. Two payloads
+      // land here: a style chip from the panel, and files from the Finder.
+      onDragOver={(event) => {
+        const types = event.dataTransfer.types
+        if (!types.includes(STYLE_DRAG_TYPE) && !types.includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+      }}
+      onDrop={(event) => {
+        const at = flow.screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY
+        })
 
-      {frames.length === 0 && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.3, ease: EASE_OUT }}
-          className="pointer-events-none absolute inset-0 grid place-items-center"
-        >
-          <div className="max-w-xs text-center">
-            <p className="text-[13.5px] text-ink-dim">This segment is empty.</p>
-            <p className="mt-2 text-[12px] leading-relaxed text-ink-faint">
-              Double-click anywhere to drop a frame. Drag the background to pan,
-              pinch to zoom.
-            </p>
-          </div>
-        </motion.div>
-      )}
-    </div>
+        const styleId = event.dataTransfer.getData(STYLE_DRAG_TYPE)
+        if (styleId) {
+          event.preventDefault()
+          void placeStyle({
+            boardId: board.id,
+            styleId,
+            x: Math.round(at.x - STYLE_W / 2),
+            y: Math.round(at.y - 40)
+          }).then((placed) => {
+            // The offer follows a successful drop, not the drag — a drop that
+            // failed has nothing to plan from.
+            if (placed) onStyleDropped(styleId)
+          })
+          return
+        }
+
+        // Electron removed File.path; the preload's webUtils bridge is the one
+        // way back from a dropped File to something the main process can open.
+        const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
+          const path = api.pathForFile(file)
+          return path ? [path] : []
+        })
+        if (paths.length === 0) return
+        event.preventDefault()
+        const overList = (event.target as HTMLElement)
+          .closest('[data-list-id]')
+          ?.getAttribute('data-list-id')
+        void dropMedia(paths, at, overList ?? null)
+      }}
+      onDoubleClick={(event) => {
+        // A double-click on empty canvas drops a scene where you clicked. Guarded
+        // on the target so double-clicking a card's text does not also spawn one.
+        if ((event.target as HTMLElement).closest('[data-node]')) return
+        placeAt(
+          flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+        )
+      }}
+      nodeTypes={NODE_TYPES}
+      minZoom={ZOOM_MIN}
+      maxZoom={ZOOM_MAX}
+      // The brief is at the origin, so open looking at it.
+      defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+      fitView
+      fitViewOptions={{ maxZoom: 1, padding: 0.3 }}
+      proOptions={{ hideAttribution: false }}
+      deleteKeyCode={['Backspace', 'Delete']}
+      selectionOnDrag
+      panOnDrag={[1, 2]}
+      panOnScroll
+      zoomOnPinch
+      zoomOnDoubleClick={false}
+      className="min-h-0 flex-1 rounded-xl border border-line-soft"
+    >
+      {/* Dots that live in the world, so they scale and translate with it —
+          graph paper rather than a static backdrop. */}
+      <Background
+        variant={BackgroundVariant.Dots}
+        gap={22}
+        size={1}
+        className="!bg-transparent"
+        color="var(--color-line-soft)"
+      />
+      <NewListButton boardId={board.id} onAdd={addList} />
+    </ReactFlow>
   )
 }
+
+const clampZoom = (zoom: number): number =>
+  Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom))
+
+/**
+ * Adding a list needs a position, and the obvious one is "somewhere you can see".
+ *
+ * The centre of the current viewport, not a fixed world coordinate — a list
+ * placed at hardcoded world x is off-screen for anyone who has panned, which
+ * reads as the button doing nothing at all. Steps down per existing list so two
+ * clicks do not stack one card exactly on the other.
+ */
+function NewListButton({
+  boardId,
+  onAdd
+}: {
+  boardId: string
+  onAdd: ReturnType<typeof useStoryboards.getState>['addList']
+}) {
+  const flow = useReactFlow()
+  const lists = useStoryboards((s) => s.lists)
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        const at = flow.screenToFlowPosition({
+          x: window.innerWidth / 2,
+          y: window.innerHeight / 2
+        })
+        void onAdd({
+          boardId,
+          title: '',
+          x: Math.round(at.x - LIST_MIN_W / 2),
+          y: Math.round(at.y - LIST_MIN_H / 2 + (lists.length % 6) * 44)
+        })
+      }}
+      className="absolute left-3 top-3 z-10 rounded-md border border-line-soft bg-surface/90 px-2.5 py-1 text-[11.5px] text-ink-dim backdrop-blur-sm transition-colors hover:border-line hover:text-ink"
+    >
+      + Reference list
+    </button>
+  )
+}
+
+/** Filename from an absolute path — the default label for a dropped reference. */
+const fileName = (path: string): string => path.split('/').pop() || path

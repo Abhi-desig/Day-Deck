@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { GOAL_COLORS } from '@shared/types'
-import type { GoalColor, Project } from '@shared/types'
+import { GOAL_COLORS, PROJECT_KINDS } from '@shared/types'
+import type { GoalColor, Project, ProjectKind } from '@shared/types'
 import type { Db } from './index'
 
 export interface ProjectRow {
   id: string
   name: string
   path: string
+  kind: string
+  entry_path: string | null
   color: string | null
   branch: string | null
   last_opened_at: string | null
@@ -18,6 +20,12 @@ export interface ProjectRow {
 const isGoalColor = (value: unknown): value is GoalColor =>
   typeof value === 'string' && (GOAL_COLORS as readonly string[]).includes(value)
 
+/** An unrecognised kind reads as code — the behaviour that needs no extra data. */
+const asKind = (value: string): ProjectKind =>
+  (PROJECT_KINDS as readonly string[]).includes(value)
+    ? (value as ProjectKind)
+    : 'code'
+
 /**
  * `missing` is supplied by the caller because only the service layer touches
  * the filesystem — the repository stays a pure translation of rows to objects
@@ -28,6 +36,8 @@ export function toProject(r: ProjectRow, missing = false): Project {
     id: r.id,
     name: r.name,
     path: r.path,
+    kind: asKind(r.kind),
+    entryPath: r.entry_path,
     color: isGoalColor(r.color) ? r.color : 'amber',
     branch: r.branch,
     lastOpenedAt: r.last_opened_at,
@@ -75,33 +85,45 @@ export interface NewProjectRow {
   path: string
   branch: string | null
   color?: GoalColor
+  kind?: ProjectKind
+  entryPath?: string | null
 }
 
 export function insert(db: Db, input: NewProjectRow): ProjectRow {
   const id = randomUUID()
+  const kind = input.kind ?? 'code'
   db.prepare(
     `INSERT INTO projects
-       (id, name, path, color, branch, last_opened_at, pinned, sort_index, created_at)
-     VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)`
+       (id, name, path, kind, entry_path, color, branch, last_opened_at,
+        pinned, sort_index, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`
   ).run(
     id,
     input.name,
     input.path,
+    kind,
+    input.entryPath ?? null,
     input.color ?? nextColor(db),
     input.branch,
-    nextSortIndex(db),
+    nextSortIndex(db, kind),
     new Date().toISOString()
   )
   return getRow(db, id) as ProjectRow
 }
 
-function nextSortIndex(db: Db): number {
+/** Per kind, because each tab in the panel orders itself independently. */
+function nextSortIndex(db: Db, kind: ProjectKind): number {
   const r = db
-    .prepare<[], { next: number }>(
-      `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next FROM projects`
+    .prepare<[string], { next: number }>(
+      `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next
+         FROM projects WHERE kind = ?`
     )
-    .get()
+    .get(kind)
   return r?.next ?? 0
+}
+
+export function setEntryPath(db: Db, id: string, entryPath: string | null): void {
+  db.prepare(`UPDATE projects SET entry_path = ? WHERE id = ?`).run(entryPath, id)
 }
 
 export function remove(db: Db, id: string): void {
@@ -147,33 +169,56 @@ export function touch(db: Db, id: string): void {
  * can reorder what it knows about without silently discarding the rest.
  */
 export function reorder(db: Db, orderedIds: string[]): void {
-  const known = new Set(listRows(db).map((r) => r.id))
+  const rows = listRows(db)
+  const kindOf = new Map(rows.map((r) => [r.id, asKind(r.kind)]))
   const stmt = db.prepare(`UPDATE projects SET sort_index = ? WHERE id = ?`)
 
   db.transaction(() => {
-    let i = 0
+    // A counter per kind. The panel shows one kind at a time and reorders only
+    // what it can see, so a drag in Code must not renumber Creative — and two
+    // kinds sharing one counter would mean every drag on one tab churned the
+    // other's indices.
+    const next = new Map<ProjectKind, number>()
+    const claimed = new Set<string>()
+
     for (const id of orderedIds) {
-      if (!known.has(id)) continue
-      stmt.run(i++, id)
-      known.delete(id)
+      const kind = kindOf.get(id)
+      if (!kind) continue
+      const i = next.get(kind) ?? 0
+      stmt.run(i, id)
+      next.set(kind, i + 1)
+      claimed.add(id)
     }
-    // Whatever was not mentioned trails behind, in its existing order.
-    for (const row of listRows(db)) {
-      if (known.has(row.id)) stmt.run(i++, row.id)
+
+    // Whatever was not mentioned trails behind its own kind, in existing order.
+    for (const row of rows) {
+      if (claimed.has(row.id)) continue
+      const kind = asKind(row.kind)
+      const i = next.get(kind) ?? 0
+      stmt.run(i, row.id)
+      next.set(kind, i + 1)
     }
+
     renumber(db)
   })()
 }
 
 /**
- * Rewrite sort_index to be 0..n-1 in display order. Called after every
- * mutation, which is what lets `ORDER BY pinned DESC, sort_index ASC` and a
- * plain `ORDER BY sort_index ASC` agree — the invariant the grid's drag
- * reordering depends on.
+ * Rewrite sort_index to be 0..n-1 in display order, within each kind.
+ *
+ * Called after every mutation, which is what lets `ORDER BY pinned DESC,
+ * sort_index ASC` and a plain `ORDER BY sort_index ASC` agree — the invariant the
+ * grid's drag reordering depends on. Per kind rather than globally, because the
+ * panel's two tabs are two independent lists that merely share a table.
  */
 export function renumber(db: Db): void {
   const stmt = db.prepare(`UPDATE projects SET sort_index = ? WHERE id = ?`)
-  listRows(db).forEach((row, i) => {
+  const next = new Map<ProjectKind, number>()
+
+  for (const row of listRows(db)) {
+    const kind = asKind(row.kind)
+    const i = next.get(kind) ?? 0
+    next.set(kind, i + 1)
     if (row.sort_index !== i) stmt.run(i, row.id)
-  })
+  }
 }

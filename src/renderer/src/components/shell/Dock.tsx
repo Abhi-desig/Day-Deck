@@ -43,6 +43,11 @@ const META: Record<SectionId, { label: string; hint: string; path: string }> = {
     label: 'Stickers',
     hint: 'Notes wall',
     path: 'M4 3.5h12v9l-3.5 4H4zM16 12.5h-3.5V16'
+  },
+  settings: {
+    label: 'Settings',
+    hint: 'Keys, rate limits, homes',
+    path: 'M10 7.2a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM10 3v2.2M10 14.8V17M3 10h2.2M14.8 10H17M5.05 5.05l1.56 1.56M13.39 13.39l1.56 1.56M14.95 5.05l-1.56 1.56M6.61 13.39l-1.56 1.56'
   }
 }
 

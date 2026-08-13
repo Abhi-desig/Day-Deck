@@ -24,6 +24,9 @@ interface ProjectCardProps {
   onRemove(): void
   onOpenInEditor(): void
   onAddToToday(): void
+  onShowFolders(): void
+  /** This card's folder panel is the one currently open below the grid. */
+  foldersOpen: boolean
   onDragStart(event: PointerEvent<HTMLElement>): void
 }
 
@@ -35,9 +38,16 @@ export function ProjectCard({
   onRemove,
   onOpenInEditor,
   onAddToToday,
+  onShowFolders,
+  foldersOpen,
   onDragStart
 }: ProjectCardProps) {
   const style = goalStyle(project.color)
+  const creative = project.kind === 'creative'
+  /** The extension of the file this opens — the fastest read of what app owns it. */
+  const fileType = project.entryPath
+    ? (project.entryPath.split('.').pop() ?? '').toLowerCase()
+    : null
 
   return (
     <MagicCard
@@ -113,6 +123,16 @@ export function ProjectCard({
               <Tag className="border-goal-rose/45 text-goal-rose">
                 folder not found
               </Tag>
+            ) : creative ? (
+              /* A creative project is not a repository, so the branch chip has
+                 nothing to say. What matters is which application owns it. */
+              fileType ? (
+                <Tag className={cn(style.border, style.text)}>.{fileType}</Tag>
+              ) : (
+                <Tag className="border-line-soft text-ink-faint">
+                  no project file
+                </Tag>
+              )
             ) : project.branch ? (
               <Tag className={cn(style.border, style.text)}>
                 <svg viewBox="0 0 16 16" className="size-3" aria-hidden>
@@ -149,10 +169,18 @@ export function ProjectCard({
               path="M8 3.5v9M3.5 8h9"
             />
             <Action
-              label="Open in VS Code"
-              onClick={onOpenInEditor}
-              path="M6 5.5L3 8l3 2.5M10 5.5L13 8l-3 2.5"
+              label={foldersOpen ? 'Hide folders' : 'Show folders'}
+              onClick={onShowFolders}
+              active={foldersOpen}
+              path="M2.5 5A1 1 0 013.5 4h2.2l1 1.5h5.8a1 1 0 011 1V12a1 1 0 01-1 1h-9a1 1 0 01-1-1V5z"
             />
+            {!creative && (
+              <Action
+                label="Open in VS Code"
+                onClick={onOpenInEditor}
+                path="M6 5.5L3 8l3 2.5M10 5.5L13 8l-3 2.5"
+              />
+            )}
             <Action
               label={`Remove ${project.name} from the grid`}
               onClick={onRemove}

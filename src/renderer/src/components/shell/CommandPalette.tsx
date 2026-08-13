@@ -25,7 +25,8 @@ const SECTION_ORDER: Array<{ id: SectionId; label: string; key: string }> = [
   { id: 'goals', label: 'Goals Admin', key: '3' },
   { id: 'tracker', label: 'Tracker', key: '4' },
   { id: 'storyboards', label: 'Storyboards', key: '5' },
-  { id: 'stickers', label: 'Stickers', key: '6' }
+  { id: 'stickers', label: 'Stickers', key: '6' },
+  { id: 'settings', label: 'Settings', key: '7' }
 ]
 
 /**

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Project } from '@shared/types'
+import type { Project, ProjectHomes, ProjectKind } from '@shared/types'
 import { api } from '../lib/api'
 
 /**
@@ -23,13 +23,24 @@ interface ProjectsState {
   openId: string | null
   busy: boolean
 
+  /** Where new projects go, per kind. Null until fetched or until chosen. */
+  homes: ProjectHomes | null
+
   load(): Promise<void>
   add(): Promise<void>
+  /** Create a named project from nothing under the kind's home. */
+  createNew(kind: ProjectKind, name: string): Promise<boolean>
+  loadHomes(): Promise<void>
+  pickHome(kind: ProjectKind): Promise<void>
   remove(id: string): Promise<void>
   togglePin(id: string): Promise<void>
   reorder(orderedIds: string[]): Promise<void>
   rename(id: string, name: string): Promise<void>
   openInEditor(id: string): Promise<void>
+  /** Opens the file picker for a creative project. */
+  addCreative(): Promise<void>
+  /** Hands a creative project's file to whichever application owns its type. */
+  openExternal(id: string): Promise<void>
   open(id: string): void
   close(): void
   setNotice(notice: string | null): void
@@ -60,6 +71,7 @@ export const useProjects = create<ProjectsState>((set, get) => {
     projects: [],
     openId: null,
     busy: false,
+    homes: null,
 
     async load() {
       // Mounting the section and jumping in from a day card can both land here
@@ -97,6 +109,44 @@ export const useProjects = create<ProjectsState>((set, get) => {
       }
     },
 
+    async createNew(kind, name) {
+      set({ busy: true, notice: null })
+      try {
+        const result = await api.projects.create(kind, name)
+        set({
+          projects: await api.projects.list(),
+          error: null,
+          notice: result.duplicate
+            ? `${result.project.name} was already in your grid.`
+            : `${result.project.name} created.`
+        })
+        return true
+      } catch (err) {
+        set({ error: message(err) })
+        return false
+      } finally {
+        set({ busy: false })
+      }
+    },
+
+    async loadHomes() {
+      try {
+        set({ homes: await api.projects.homes() })
+      } catch (err) {
+        set({ error: message(err) })
+      }
+    },
+
+    async pickHome(kind) {
+      try {
+        const homes = await api.projects.pickHome(kind)
+        // null is a cancelled dialog; the previous answer stands.
+        if (homes) set({ homes, error: null })
+      } catch (err) {
+        set({ error: message(err) })
+      }
+    },
+
     async remove(id) {
       if (get().openId === id) set({ openId: null })
       await apply(() => api.projects.remove(id))
@@ -111,13 +161,50 @@ export const useProjects = create<ProjectsState>((set, get) => {
     async reorder(orderedIds) {
       // Show the new order immediately — a drag that snaps back while the write
       // lands feels broken even when nothing went wrong.
+      //
+      // Merged rather than replaced: the panel shows one kind at a time and sends
+      // only the ids it can see, so rebuilding the list from them alone would make
+      // every Code project vanish the moment you dragged a Creative one.
+      const listed = new Set(orderedIds)
       const byId = new Map(get().projects.map((p) => [p.id, p]))
-      const optimistic = orderedIds
+      const moved = orderedIds
         .map((id) => byId.get(id))
         .filter((p): p is Project => p !== undefined)
-      set({ projects: optimistic })
+      const untouched = get().projects.filter((p) => !listed.has(p.id))
+      set({ projects: [...moved, ...untouched] })
 
       await apply(() => api.projects.reorder(orderedIds))
+    },
+
+    async addCreative() {
+      set({ busy: true, notice: null })
+      try {
+        const result = await api.projects.addCreative()
+        if (!result) return
+        set({
+          projects: await api.projects.list(),
+          error: null,
+          notice: result.duplicate
+            ? `${result.project.name} was already in your grid.`
+            : null
+        })
+      } catch (err) {
+        set({ error: message(err) })
+      } finally {
+        set({ busy: false })
+      }
+    },
+
+    async openExternal(id) {
+      const project = get().projects.find((p) => p.id === id)
+      set({ notice: null })
+      try {
+        await api.projects.openExternal(id)
+        await api.projects.touch(id)
+        set({ notice: `Opening ${project?.name ?? 'that project'}…`, error: null })
+      } catch (err) {
+        set({ error: message(err) })
+      }
     },
 
     async rename(id, name) {

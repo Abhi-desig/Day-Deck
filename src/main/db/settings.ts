@@ -40,7 +40,19 @@ export const SETTING = {
   morningEnabled: 'notify.morning_enabled',
   morningMin: 'notify.morning_min',
   eveningEnabled: 'notify.evening_enabled',
-  eveningMin: 'notify.evening_min'
+  eveningMin: 'notify.evening_min',
+  /**
+   * Where new projects are created, one directory per kind.
+   *
+   * Two keys rather than one because code and creative work rarely want to live
+   * together: repositories belong somewhere small and backed up, a hundred
+   * gigabytes of footage usually belongs on a scratch drive. Setting both to the
+   * same path is a perfectly good answer, and is what sharing one home means.
+   */
+  codeHome: 'projects.code_home',
+  creativeHome: 'projects.creative_home',
+  /** Gemini calls allowed per minute, per feature slot. */
+  geminiRatePerMinute: 'gemini.rate_per_minute'
 } as const
 
 /** 2½ hours of focused study a day is already an ambitious default. */
