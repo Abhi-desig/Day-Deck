@@ -1,17 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { Storyboard } from '@shared/types'
+import type {
+  PromptApply,
+  PromptPlanProposal,
+  SceneApply,
+  ScenePlanProposal,
+  Storyboard,
+  StoryFrame
+} from '@shared/types'
 import { cn } from '../../lib/cn'
 import { goalStyle } from '../../lib/goalColor'
 import { EASE_OUT, SPRING } from '../../lib/motion'
+import { api } from '../../lib/api'
+import { boardDuration, formatDuration } from '../../lib/scene'
 import { useIntent } from '../../store/useShell'
 import { useProjects } from '../../store/useProjects'
 import { useStoryboards } from '../../store/useStoryboards'
+import { useStyles } from '../../store/useStyles'
+import { ApprovalWindow } from './ApprovalWindow'
 import { Canvas, ZOOM_MAX, ZOOM_MIN, type CanvasHandle } from './Canvas'
+import { FocusMode } from './FocusMode'
+import { PromptWindow } from './PromptWindow'
+import { StylePanel } from './StylePanel'
 
 export function Storyboards() {
   const boards = useStoryboards((s) => s.boards)
   const frames = useStoryboards((s) => s.frames)
+  const lists = useStoryboards((s) => s.lists)
+  const items = useStoryboards((s) => s.items)
+  const refs = useStoryboards((s) => s.refs)
+  const briefRefs = useStoryboards((s) => s.briefRefs)
   const activeId = useStoryboards((s) => s.activeId)
   const ready = useStoryboards((s) => s.ready)
   const loadingFrames = useStoryboards((s) => s.loadingFrames)
@@ -24,8 +42,29 @@ export function Storyboards() {
   const projects = useProjects((s) => s.projects)
   const loadProjects = useProjects((s) => s.load)
 
+  const styleLibrary = useStyles((s) => s.styles)
+  const loadStyles = useStyles((s) => s.load)
+  const loadPlaced = useStyles((s) => s.loadPlaced)
+  const styleError = useStyles((s) => s.error)
+  const dismissStyleError = useStyles((s) => s.dismissError)
+
   const [naming, setNaming] = useState(false)
   const [zoom, setZoom] = useState(1)
+  /** -1 is closed. An index rather than an id, because focus mode walks in order. */
+  const [focus, setFocus] = useState(-1)
+  const [stylesOpen, setStylesOpen] = useState(false)
+  const [proposal, setProposal] = useState<ScenePlanProposal | null>(null)
+  const [planning, setPlanning] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [planError, setPlanError] = useState<string | null>(null)
+  /** A style was just dropped; offer a plan run rather than firing one. */
+  const [offerStyleId, setOfferStyleId] = useState<string | null>(null)
+  /** Scenes were just applied; ask permission to write their prompts. */
+  const [offerPrompts, setOfferPrompts] = useState(false)
+  const [promptProposal, setPromptProposal] =
+    useState<PromptPlanProposal | null>(null)
+  const [planningPrompts, setPlanningPrompts] = useState(false)
+  const [applyingPrompts, setApplyingPrompts] = useState(false)
 
   // Commands, not state — see the note on CanvasHandle.
   const canvasRef = useRef<CanvasHandle | null>(null)
@@ -38,7 +77,18 @@ export function Storyboards() {
     // Boards can belong to a project, and the picker needs the list to offer
     // one. Cheap, and the grid caches it anyway.
     void loadProjects()
-  }, [load, loadProjects])
+    // The library is board-independent, so it loads once with the section.
+    void loadStyles()
+  }, [load, loadProjects, loadStyles])
+
+  // Placements belong to one board, so they follow the open board. Pending
+  // offers belong to the board they were raised on and go with it.
+  useEffect(() => {
+    if (activeId) void loadPlaced(activeId)
+    setOfferStyleId(null)
+    setOfferPrompts(false)
+    setPromptProposal(null)
+  }, [activeId, loadPlaced])
 
   const newBoardIntent = useIntent('newBoard')
   useEffect(() => {
@@ -54,6 +104,73 @@ export function Storyboards() {
     setNaming(false)
   }
 
+  /**
+   * Ask for a plan. Writes nothing — the proposal comes back for approval, and
+   * `applyScenePlan` is the only call that touches a row.
+   */
+  async function plan(): Promise<void> {
+    if (!activeId || planning) return
+    setPlanning(true)
+    setPlanError(null)
+    try {
+      setProposal(await api.storyboards.planScenes(activeId))
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPlanning(false)
+    }
+  }
+
+  async function applyPlan(applies: SceneApply[]): Promise<void> {
+    if (!activeId || applies.length === 0) return
+    setApplying(true)
+    try {
+      await api.storyboards.applyScenePlan(activeId, applies)
+      // Re-open rather than patching in place: applying can create, rewrite and
+      // delete in one go, and the board that comes back is the truth about all
+      // three at once.
+      await open(activeId)
+      setProposal(null)
+      // Scenes are on the board; prompts are stage two, and stage two starts
+      // by asking. Only when something survived — a plan applied as all
+      // deletions has nothing to write prompts for.
+      setOfferPrompts(applies.some((a) => a.kind !== 'delete'))
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  /** Stage two. Writes nothing — the prompts come back for approval. */
+  async function planPrompts(): Promise<void> {
+    if (!activeId || planningPrompts) return
+    setOfferPrompts(false)
+    setPlanningPrompts(true)
+    setPlanError(null)
+    try {
+      setPromptProposal(await api.storyboards.planPrompts(activeId))
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPlanningPrompts(false)
+    }
+  }
+
+  async function applyPrompts(applies: PromptApply[]): Promise<void> {
+    if (!activeId || applies.length === 0) return
+    setApplyingPrompts(true)
+    try {
+      await api.storyboards.applyPromptPlan(activeId, applies)
+      await open(activeId)
+      setPromptProposal(null)
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setApplyingPrompts(false)
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col px-7 pb-7">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-4 pb-3">
@@ -64,12 +181,69 @@ export function Storyboards() {
           <span className="text-[12.5px] text-ink-faint">
             {boards.length === 0
               ? 'A canvas per project, and a prompt per frame'
-              : `${frames.length} ${frames.length === 1 ? 'frame' : 'frames'} on ${active?.title ?? 'this board'}`}
+              : summarise(frames, active?.title)}
           </span>
         </div>
 
         {active && (
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setStylesOpen(!stylesOpen)}
+              aria-expanded={stylesOpen}
+              className={cn(
+                'rounded-md border px-2.5 py-1 text-[11.5px] transition-colors',
+                stylesOpen
+                  ? 'border-line bg-raised text-ink'
+                  : 'border-line-soft text-ink-dim hover:border-line hover:text-ink'
+              )}
+            >
+              Styles
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void plan()}
+              // The same gate the service applies: brief or visual style is
+              // enough to plan from. Requiring the brief specifically left this
+              // disabled on boards the planner would happily accept.
+              disabled={
+                planning || !(active.brief.trim() || active.visualStyle.trim())
+              }
+              title={
+                active.brief.trim() || active.visualStyle.trim()
+                  ? 'Read the brief and propose a scene breakdown'
+                  : 'Write the brief or visual style on the canvas first'
+              }
+              className="rounded-md border border-amber/40 px-2.5 py-1 text-[11.5px] text-amber-soft transition-colors hover:bg-amber/10 disabled:opacity-35 disabled:hover:bg-transparent"
+            >
+              {planning ? 'Planning…' : 'Plan scenes'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void planPrompts()}
+              disabled={planningPrompts || frames.length === 0}
+              title={
+                frames.length === 0
+                  ? 'Plan or add scenes first'
+                  : 'Write a prompt for every scene, consistent with the style and the board'
+              }
+              className="rounded-md border border-amber/40 px-2.5 py-1 text-[11.5px] text-amber-soft transition-colors hover:bg-amber/10 disabled:opacity-35 disabled:hover:bg-transparent"
+            >
+              {planningPrompts ? 'Writing…' : 'Write prompts'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setFocus(0)}
+              disabled={frames.length === 0}
+              title="Walk the board one scene at a time"
+              className="rounded-md border border-line-soft px-2.5 py-1 text-[11.5px] text-ink-dim transition-colors hover:border-line hover:text-ink disabled:opacity-35 disabled:hover:border-line-soft"
+            >
+              Scene by scene
+            </button>
+
             <div className="flex items-center gap-0.5 rounded-full border border-line-soft p-0.5">
               <ZoomButton
                 label="Zoom out"
@@ -129,17 +303,105 @@ export function Storyboards() {
         )}
       </AnimatePresence>
 
-      {error && (
-        <div className="mb-2 flex shrink-0 items-center gap-3 rounded-lg border border-amber/30 bg-amber/8 px-3.5 py-2">
-          <span className="flex-1 text-[12.5px] text-amber-soft">{error}</span>
-          <button
-            type="button"
-            onClick={dismissError}
-            className="text-[11px] text-amber-soft/70 hover:text-amber-soft"
+      <StylePanel open={stylesOpen} />
+
+      <AnimatePresence initial={false}>
+        {offerPrompts && active && frames.length > 0 && (
+          <motion.div
+            key="prompt-offer"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={SPRING.soft}
+            className="shrink-0 overflow-hidden"
           >
-            Dismiss
-          </button>
-        </div>
+            <div className="mb-2 flex items-center gap-3 rounded-lg border border-line-soft bg-surface/70 px-3.5 py-2">
+              <span className="flex-1 text-[12.5px] text-ink-dim">
+                Scenes are on the board. Write a prompt for each one,
+                consistent with the style and the whole board?
+              </span>
+              <button
+                type="button"
+                disabled={planningPrompts}
+                onClick={() => void planPrompts()}
+                className="rounded-md border border-amber/40 px-2.5 py-1 text-[11px] text-amber-soft transition-colors hover:bg-amber/10 disabled:opacity-35"
+              >
+                {planningPrompts ? 'Writing…' : 'Write prompts'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setOfferPrompts(false)}
+                className="text-[11px] text-ink-faint hover:text-ink"
+              >
+                Not now
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence initial={false}>
+        {offerStyleId && active && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={SPRING.soft}
+            className="shrink-0 overflow-hidden"
+          >
+            <div className="mb-2 flex items-center gap-3 rounded-lg border border-line-soft bg-surface/70 px-3.5 py-2">
+              <span className="flex-1 text-[12.5px] text-ink-dim">
+                {offerName(styleLibrary, offerStyleId)} is on the board.
+                {active.brief.trim() || active.visualStyle.trim()
+                  ? ' Plan scenes with it now?'
+                  : ' Write the brief, then plan scenes with it.'}
+              </span>
+              {(active.brief.trim() || active.visualStyle.trim()) && (
+                <button
+                  type="button"
+                  disabled={planning}
+                  onClick={() => {
+                    setOfferStyleId(null)
+                    void plan()
+                  }}
+                  className="rounded-md border border-amber/40 px-2.5 py-1 text-[11px] text-amber-soft transition-colors hover:bg-amber/10 disabled:opacity-35"
+                >
+                  Plan scenes
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setOfferStyleId(null)}
+                className="text-[11px] text-ink-faint hover:text-ink"
+              >
+                Not now
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {[
+        { text: error, dismiss: dismissError },
+        { text: styleError, dismiss: dismissStyleError },
+        { text: planError, dismiss: () => setPlanError(null) }
+      ].map(
+        ({ text, dismiss }) =>
+          text && (
+            <div
+              key={text}
+              className="mb-2 flex shrink-0 items-center gap-3 rounded-lg border border-amber/30 bg-amber/8 px-3.5 py-2"
+            >
+              <span className="flex-1 text-[12.5px] text-amber-soft">{text}</span>
+              <button
+                type="button"
+                onClick={dismiss}
+                className="text-[11px] text-amber-soft/70 hover:text-amber-soft"
+              >
+                Dismiss
+              </button>
+            </div>
+          )
       )}
 
       {!ready ? (
@@ -153,20 +415,89 @@ export function Storyboards() {
             loadingFrames && 'opacity-60'
           )}
         >
-          {/* Keyed by board so switching segments remounts the canvas — pan,
-              zoom and every frame's local geometry belong to one board and must
-              not be inherited by the next. */}
+          {/* Keyed by board so switching segments remounts the canvas — the
+              viewport, selection and node store belong to one board and must not
+              be inherited by the next. */}
           <Canvas
             key={active.id}
-            boardId={active.id}
+            board={active}
             frames={frames}
+            lists={lists}
+            items={items}
+            refs={refs}
+            briefRefs={briefRefs}
             onHandle={onHandle}
             onZoom={setZoom}
+            onFocusScene={(frameId) =>
+              setFocus(frames.findIndex((f) => f.id === frameId))
+            }
+            // An offer, not a trigger. Auto-firing meant every style drop cost
+            // a plan call the user never asked for — and could not take back.
+            onStyleDropped={setOfferStyleId}
           />
         </div>
       )}
+
+      <ApprovalWindow
+        proposal={proposal}
+        frames={frames}
+        busy={applying}
+        onApply={(applies) => void applyPlan(applies)}
+        onClose={() => setProposal(null)}
+      />
+
+      <PromptWindow
+        proposal={promptProposal}
+        frames={frames}
+        busy={applyingPrompts}
+        onApply={(applies) => void applyPrompts(applies)}
+        onClose={() => setPromptProposal(null)}
+      />
+
+      <FocusMode
+        frames={frames}
+        refsFor={(frameId) => {
+          const wired = new Set(
+            refs.filter((r) => r.frameId === frameId).map((r) => r.itemId)
+          )
+          return items.filter((i) => wired.has(i.id))
+        }}
+        index={focus}
+        onIndex={setFocus}
+        onClose={() => setFocus(-1)}
+      />
     </div>
   )
+}
+
+/**
+ * The header's one line about the board.
+ *
+ * Run time is reported with its own caveat rather than as a bare total: "45s" on a
+ * board where four scenes have no duration yet is a number that reads as complete
+ * and is not.
+ */
+/** The dropped style's name for the offer line, if the library still has it. */
+function offerName(
+  styles: ReturnType<typeof useStyles.getState>['styles'],
+  styleId: string
+): string {
+  const name = styles.find((s) => s.id === styleId)?.name
+  return name ? `“${name}”` : 'The style'
+}
+
+function summarise(frames: StoryFrame[], title: string | undefined): string {
+  const where = title ?? 'this board'
+  if (frames.length === 0) return `Nothing on ${where} yet`
+
+  const count = `${frames.length} ${frames.length === 1 ? 'scene' : 'scenes'}`
+  const { seconds, undecided } = boardDuration(frames)
+  if (seconds === 0) return `${count} on ${where}`
+
+  const run = formatDuration(seconds)
+  return undecided > 0
+    ? `${count} on ${where} · ${run} so far, ${undecided} undecided`
+    : `${count} on ${where} · ${run}`
 }
 
 function ZoomButton({
