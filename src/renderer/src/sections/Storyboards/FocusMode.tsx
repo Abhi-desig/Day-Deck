@@ -108,7 +108,7 @@ function SceneSheet({
   const style = goalStyle(frame.color)
 
   return (
-    <div className="glass pointer-events-auto flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-white/10 shadow-[0_40px_80px_-30px_rgb(0_0_0/0.8)]">
+    <div className="glass pointer-events-auto flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-hairline modal-shadow">
       <header className="flex shrink-0 items-center gap-3 border-b border-line-soft px-5 py-3">
         <span className={cn('size-2 rounded-full', style.dot)} />
         <h2 className="text-[14px] tracking-[-0.01em]">
@@ -154,7 +154,7 @@ function SceneSheet({
             value={frame.description}
             placeholder="What happens in this shot…"
             onCommit={(description) => void patchFrame(frame.id, { description })}
-            className="min-h-[68px] rounded-lg border border-line-soft bg-black/20 p-2.5 text-[13px] leading-relaxed text-ink-dim"
+            className="min-h-[68px] rounded-lg border border-line-soft bg-well p-2.5 text-[13px] leading-relaxed text-ink-dim"
           />
         </Labelled>
 
@@ -164,7 +164,7 @@ function SceneSheet({
             value={frame.prompt}
             placeholder="The prompt for this scene…"
             onCommit={(prompt) => void patchFrame(frame.id, { prompt })}
-            className="min-h-[140px] rounded-lg border border-line-soft bg-black/20 p-2.5 font-mono text-[12px] leading-relaxed text-ink-dim"
+            className="min-h-[140px] rounded-lg border border-line-soft bg-well p-2.5 font-mono text-[12px] leading-relaxed text-ink-dim"
           />
         </Labelled>
 
@@ -227,7 +227,7 @@ function Reference({ item }: { item: StoryListItem }) {
   }
 
   return (
-    <figure className="overflow-hidden rounded-lg border border-line-soft bg-black/30">
+    <figure className="overflow-hidden rounded-lg border border-line-soft bg-well-deep">
       {item.mediaKind === 'video' ? (
         <video
           src={mediaUrl(item.id)}

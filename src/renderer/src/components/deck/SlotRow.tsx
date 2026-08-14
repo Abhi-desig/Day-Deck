@@ -150,7 +150,7 @@ export function SlotRow({
                 title={`Open ${slot.sourceLabel} workspace`}
                 className={cn(
                   'inline-flex max-w-[170px] items-center gap-1 rounded-full border px-1.5 py-px text-[10px]',
-                  'transition-colors hover:bg-white/5',
+                  'transition-colors hover:bg-hover',
                   goalStyle(slot.sourceColor).border,
                   goalStyle(slot.sourceColor).text
                 )}
@@ -349,7 +349,7 @@ function TagChips({ slot }: { slot: Slot }) {
             title={`${tag.label} — ${derivation(tag.origin, tag.matched)}. Click to remove.`}
             className={cn(
               'inline-flex items-center gap-1 rounded-full border px-1.5 py-px text-[10px]',
-              'transition-colors hover:bg-white/8',
+              'transition-colors hover:bg-hover-strong',
               tagStyle(tag.color).border,
               tagStyle(tag.color).text
             )}
@@ -389,7 +389,7 @@ function TagChips({ slot }: { slot: Slot }) {
                 // next row down.
                 className={cn(
                   'absolute left-0 top-5 z-50 flex min-w-[130px] flex-col gap-0.5',
-                  'rounded-lg border border-line-soft bg-surface p-1 shadow-lg shadow-black/50'
+                  'rounded-lg border border-line-soft bg-surface p-1 popover-shadow'
                 )}
               >
                 {available.map((tag) => (

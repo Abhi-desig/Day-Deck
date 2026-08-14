@@ -30,6 +30,7 @@ import { loader } from '@monaco-editor/react'
  */
 
 export const DAY_DECK_THEME = 'day-deck'
+export const DAY_DECK_THEME_LIGHT = 'day-deck-light'
 
 monaco.editor.defineTheme(DAY_DECK_THEME, {
   base: 'vs-dark',
@@ -66,6 +67,55 @@ monaco.editor.defineTheme(DAY_DECK_THEME, {
     'minimap.background': '#00000000',
     'editorBracketMatch.background': '#ffb02026',
     'editorBracketMatch.border': '#ffb02066'
+  }
+})
+
+/*
+ * The same theme against a light workspace.
+ *
+ * Monaco holds its colours in a JS object handed to the library, so it is one of
+ * the two places in the app a CSS token swap cannot reach — this has to exist
+ * as a second object and be selected by name.
+ *
+ * The token mapping is identical to the dark theme (keyword violet, string
+ * green, number amber, type sky, function amber); only the values move, each
+ * lifted from the light palette in globals.css. The background stays
+ * transparent for the same reason it is transparent above: the pane behind is
+ * glass, and an opaque editor would punch a hole in it.
+ */
+monaco.editor.defineTheme(DAY_DECK_THEME_LIGHT, {
+  base: 'vs',
+  inherit: true,
+  rules: [
+    { token: 'comment', foreground: '6a6f7d', fontStyle: 'italic' },
+    { token: 'keyword', foreground: '7644cb' },
+    { token: 'string', foreground: '0b6b53' },
+    { token: 'number', foreground: '8a5a00' },
+    { token: 'type', foreground: '2a52bd' },
+    { token: 'function', foreground: '9a5b00' },
+    { token: 'variable', foreground: '1c1e26' },
+    { token: 'delimiter', foreground: '5a5f6e' }
+  ],
+  colors: {
+    'editor.background': '#00000000',
+    'editor.foreground': '#191b23',
+    'editorLineNumber.foreground': '#b0b5c1',
+    'editorLineNumber.activeForeground': '#5a5f6e',
+    'editorCursor.foreground': '#9a5b00',
+    'editor.selectionBackground': '#9a5b0026',
+    'editor.inactiveSelectionBackground': '#9a5b0014',
+    'editor.lineHighlightBackground': '#0f14230a',
+    'editorIndentGuide.background1': '#0f142314',
+    'editorIndentGuide.activeBackground1': '#0f142330',
+    'editorWidget.background': '#ffffff',
+    'editorWidget.border': '#c3c7d2',
+    'editorGutter.background': '#00000000',
+    'scrollbarSlider.background': '#c3c7d280',
+    'scrollbarSlider.hoverBackground': '#a9aebccc',
+    'scrollbarSlider.activeBackground': '#8b90a0cc',
+    'minimap.background': '#00000000',
+    'editorBracketMatch.background': '#9a5b0020',
+    'editorBracketMatch.border': '#9a5b0066'
   }
 })
 

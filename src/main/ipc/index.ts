@@ -1,6 +1,13 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import { app, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import {
+  BrowserWindow,
+  app,
+  dialog,
+  ipcMain,
+  shell,
+  type IpcMainInvokeEvent
+} from 'electron'
 import { isValidKey, todayKey } from '@shared/date'
 import { IPC } from '@shared/ipc-contract'
 import {
@@ -9,10 +16,13 @@ import {
   MEDIA_EXTENSIONS,
   MEDIA_KINDS,
   OMNI_DURATIONS,
+  SHEET_KINDS,
   STICKER_COLORS,
   STYLE_FIELDS,
   TAG_COLORS,
+  WINDOW_BACKGROUND,
   isOmniDuration,
+  isThemeName,
   mediaKindFor
 } from '@shared/types'
 import type {
@@ -29,6 +39,7 @@ import type {
   NewStoryFrame,
   NewStoryList,
   NewStoryListItem,
+  NewStorySheet,
   NewStoryStyleNode,
   NewTag,
   NewVideoStyle,
@@ -46,12 +57,14 @@ import type {
   StoryFramePatch,
   StoryListItemPatch,
   StoryListPatch,
+  StorySheetPatch,
   TagOrigin,
   TagPatch,
   VideoStylePatch
 } from '@shared/types'
 import { dbPath, getDb } from '../db'
 import { MIGRATIONS } from '../db/migrations'
+import { SETTING, getUiPrefs, setSetting } from '../db/settings'
 import * as notes from '../db/notes'
 import * as slots from '../db/slots'
 import * as stickers from '../db/stickers'
@@ -628,6 +641,28 @@ export function registerIpc(): void {
     storyboards.deleteBriefRef(getDb(), boardId, itemId)
   })
 
+  ipcMain.handle(IPC.sheetsList, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return storyboards.listSheets(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.sheetsCreate, (_e, input: NewStorySheet) => {
+    assertId(input?.boardId, 'board id')
+    validateSheetPatch(input ?? {})
+    return storyboards.createSheet(getDb(), input)
+  })
+
+  ipcMain.handle(IPC.sheetsUpdate, (_e, id: unknown, patch: StorySheetPatch) => {
+    assertId(id, 'character id')
+    validateSheetPatch(patch ?? {})
+    return storyboards.updateSheet(getDb(), id, patch ?? {})
+  })
+
+  ipcMain.handle(IPC.sheetsDelete, (_e, id: unknown) => {
+    assertId(id, 'character id')
+    storyboards.deleteSheet(getDb(), id)
+  })
+
   ipcMain.handle(IPC.mediaPick, async () => {
     const result = await dialog.showOpenDialog({
       title: 'Add reference media',
@@ -829,6 +864,29 @@ export function registerIpc(): void {
       throw new Error('The rate has to be a number of calls per minute.')
     }
     return rateLimit.setRatePerMinute(getDb(), perMinute)
+  })
+
+  ipcMain.handle(IPC.settingsGetPrefs, () => getUiPrefs(getDb()))
+
+  ipcMain.handle(IPC.settingsSetTheme, (_e, theme: unknown) => {
+    if (!isThemeName(theme)) {
+      throw new Error(`Unknown theme: ${String(theme)}`)
+    }
+    setSetting(getDb(), SETTING.theme, theme)
+    // So the *next* cold launch paints the right chrome before the renderer has
+    // run a line of JS. The live window is already repainting from CSS.
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.setBackgroundColor(WINDOW_BACKGROUND[theme])
+    }
+    return theme
+  })
+
+  ipcMain.handle(IPC.settingsSetSceneNumbers, (_e, on: unknown) => {
+    if (typeof on !== 'boolean') {
+      throw new Error('Scene numbers are on or off.')
+    }
+    setSetting(getDb(), SETTING.sceneNumbers, on ? '1' : '0')
+    return on
   })
 
   /* -------------------------------- projects, editor files and terminals */
@@ -1133,6 +1191,37 @@ function validateListItemPatch(patch: StoryListItemPatch): void {
     if (patch.thumb.length > MAX_THUMB) {
       throw new Error('That thumbnail is too large.')
     }
+  }
+}
+
+/**
+ * A character description is restated in full inside every prompt that shows
+ * them, so its length is multiplied by the size of the board. Bounded for the
+ * same reason a style field is, and to the same order.
+ */
+const MAX_SHEET_DESCRIPTION = 600
+
+function validateSheetPatch(patch: StorySheetPatch): void {
+  if (patch.name !== undefined) {
+    if (typeof patch.name !== 'string') {
+      throw new Error('A character name has to be text.')
+    }
+    if (patch.name.length > MAX_NAME) {
+      throw new Error(`A character name has to be under ${MAX_NAME} characters.`)
+    }
+  }
+  if (patch.description !== undefined) {
+    if (typeof patch.description !== 'string') {
+      throw new Error('A character description has to be text.')
+    }
+    if (patch.description.length > MAX_SHEET_DESCRIPTION) {
+      throw new Error(
+        `A character description has to be under ${MAX_SHEET_DESCRIPTION} characters — it is repeated in every prompt that shows them.`
+      )
+    }
+  }
+  if (patch.kind !== undefined && !SHEET_KINDS.includes(patch.kind)) {
+    throw new Error(`Unknown sheet kind: ${String(patch.kind)}`)
   }
 }
 

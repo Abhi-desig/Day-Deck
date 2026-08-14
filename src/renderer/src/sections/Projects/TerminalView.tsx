@@ -3,7 +3,9 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
+import type { ThemeName } from '@shared/types'
 import { api } from '../../lib/api'
+import { usePrefs } from '../../store/usePrefs'
 
 /**
  * One xterm bound to one pty, for the lifetime of this component.
@@ -52,6 +54,49 @@ const THEME = {
   brightWhite: '#f6f6f9'
 }
 
+/**
+ * The same terminal on a light workspace.
+ *
+ * Not an inversion. The dark theme's `yellow` is 1.4:1 on white and its `cyan`
+ * is 1.5:1 — both literally unreadable — so every base colour comes down to
+ * roughly 6-7:1. "Bright" then cannot mean lighter without vanishing, so the
+ * bright set sits at 4.2-5:1: still visibly more vivid than the base set, still
+ * legible. That is what Solarized Light and One Light do too.
+ *
+ * Two that are easy to get wrong. `brightBlack` is what every CLI reaches for
+ * to dim its own output, so it has to stay readable — it is the single biggest
+ * tell of a badly ported light terminal. And `white` stays a light grey rather
+ * than going dark, because TUIs use it as a *background* fill; only
+ * `brightWhite` is an emphasis foreground, so only that one inverts.
+ */
+const THEME_LIGHT = {
+  background: '#00000000',
+  foreground: '#1f2229',
+  cursor: '#9a5b00',
+  // The glyph under a block cursor, so it has to be the ground.
+  cursorAccent: '#ffffff',
+  selectionBackground: '#c98a1a40',
+  black: '#1f2229',
+  red: '#b3243c',
+  green: '#0b6b53',
+  yellow: '#8a5a00',
+  blue: '#2a52bd',
+  magenta: '#6f3fbe',
+  cyan: '#0a6273',
+  white: '#b4b8c2',
+  brightBlack: '#6a6f7d',
+  brightRed: '#d1355a',
+  brightGreen: '#128a6c',
+  brightYellow: '#a8700a',
+  brightBlue: '#3a6ad6',
+  brightMagenta: '#8a55d6',
+  brightCyan: '#0d7d92',
+  brightWhite: '#3c4150'
+}
+
+const themeFor = (theme: ThemeName): typeof THEME =>
+  theme === 'light' ? THEME_LIGHT : THEME
+
 export function TerminalView({
   projectId,
   active,
@@ -63,6 +108,8 @@ export function TerminalView({
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  /** Held so a theme change can invalidate its glyph cache — see below. */
+  const webglRef = useRef<WebglAddon | null>(null)
   const sessionRef = useRef<string | null>(null)
   /** Keystrokes typed before the pty finished starting. */
   const pendingRef = useRef<string[]>([])
@@ -95,7 +142,7 @@ export function TerminalView({
       // The pane behind this is glass; an opaque terminal would punch a hole
       // in it.
       allowTransparency: true,
-      theme: THEME
+      theme: themeFor(usePrefs.getState().theme)
     })
     termRef.current = term
 
@@ -110,8 +157,13 @@ export function TerminalView({
     // renderer is still there, so failure is not worth surfacing.
     try {
       const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
+      webgl.onContextLoss(() => {
+        webgl.dispose()
+        // Or a later theme change calls into a disposed addon.
+        webglRef.current = null
+      })
       term.loadAddon(webgl)
+      webglRef.current = webgl
     } catch {
       /* canvas renderer it is */
     }
@@ -184,8 +236,34 @@ export function TerminalView({
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      webglRef.current = null
     }
   }, [projectId])
+
+  /*
+   * Repaint on a theme change.
+   *
+   * Its own effect, deliberately: adding the theme to the setup effect's deps
+   * would tear down the pty and take the scrollback with it every time the
+   * toggle is flipped.
+   *
+   * Two steps, and the second is not optional. `options.theme` is compared by
+   * reference, so a fresh object is required — mutating the existing one does
+   * nothing. And the WebGL renderer caches every glyph it has drawn *with its
+   * colour baked in*, so without clearing that atlas the scrollback keeps
+   * repainting in the old palette until each cell happens to change.
+   */
+  const theme = usePrefs((s) => s.theme)
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+
+    term.options.theme = { ...themeFor(theme) }
+    // Absent on the canvas-renderer fallback path, which honours a theme
+    // change on its own.
+    webglRef.current?.clearTextureAtlas()
+    term.refresh(0, term.rows - 1)
+  }, [theme])
 
   /**
    * Re-fit only when a layout has finished moving, and tell the pty its new

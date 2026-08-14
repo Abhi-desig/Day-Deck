@@ -156,7 +156,7 @@ export function ProjectGrid({
               }
             }}
             style={{ zIndex: isDragging ? 30 : 1 }}
-            className={cn(isDragging && 'drop-shadow-[0_18px_36px_rgba(0,0,0,0.55)]')}
+            className={cn(isDragging && 'lift-shadow')}
           >
             <ProjectCard
               project={project}

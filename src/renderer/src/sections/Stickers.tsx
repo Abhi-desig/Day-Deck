@@ -605,7 +605,7 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
             type="button"
             onClick={() => void remove(sticker.id)}
             aria-label="Delete sticker"
-            className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-black/20 hover:text-ink"
+            className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-well hover:text-ink"
           >
             <svg viewBox="0 0 16 16" className="size-3" aria-hidden>
               <path
@@ -635,7 +635,7 @@ function Note({ sticker, boardW }: { sticker: Sticker; boardW: number }) {
           // `min-h-0` is what lets a flex child scroll instead of forcing its
           // parent taller — the card's height is fixed, so the overflow has to
           // go somewhere and this is where.
-          className="min-h-0 flex-1 resize-none overflow-y-auto rounded-md bg-black/15 p-1.5 text-[13px] leading-relaxed text-ink outline-none"
+          className="min-h-0 flex-1 resize-none overflow-y-auto rounded-md bg-well p-1.5 text-[13px] leading-relaxed text-ink outline-none"
         />
       ) : (
         <button
@@ -666,7 +666,7 @@ function NoteFooter({ sticker }: { sticker: Sticker }) {
   if (!attached && !expires && !folder) return null
 
   return (
-    <div className="mt-2 flex items-center gap-2 border-t border-white/10 pt-1.5 text-[10.5px] text-ink-faint">
+    <div className="mt-2 flex items-center gap-2 border-t border-hairline pt-1.5 text-[10.5px] text-ink-faint">
       {folder && (
         <span className="inline-flex items-center gap-1">
           <span className={cn('size-1 rounded-full', paperStyle(folder.color).dot)} />
@@ -700,7 +700,7 @@ function FolderSwitch({ sticker }: { sticker: Sticker }) {
         aria-expanded={open}
         aria-label="Move to a folder"
         title="Move to a folder"
-        className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-black/20 hover:text-ink"
+        className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-well hover:text-ink"
       >
         <svg viewBox="0 0 16 16" className="size-3" aria-hidden>
           <path
@@ -720,7 +720,7 @@ function FolderSwitch({ sticker }: { sticker: Sticker }) {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.96 }}
             transition={{ duration: 0.14, ease: EASE_OUT }}
-            className="absolute right-0 top-6 z-[60] flex min-w-[140px] flex-col gap-0.5 rounded-lg border border-line-soft bg-surface p-1 shadow-lg shadow-black/50"
+            className="absolute right-0 top-6 z-[60] flex min-w-[140px] flex-col gap-0.5 rounded-lg border border-line-soft bg-surface p-1 popover-shadow"
           >
             {folders.map((folder: StickerFolder) => (
               <button
@@ -777,7 +777,7 @@ function ColorSwitch({
       onClick={() => onPick(next)}
       aria-label="Change colour"
       title="Change colour"
-      className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-black/20 hover:text-ink"
+      className="grid size-5 place-items-center rounded text-ink-faint transition-colors hover:bg-well hover:text-ink"
     >
       <span className={cn('size-2.5 rounded-full', paperStyle(next).dot)} />
     </button>

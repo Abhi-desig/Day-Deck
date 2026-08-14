@@ -130,7 +130,7 @@ function Row({ item }: { item: StoryListItem }) {
   const removeItem = useStoryboards((s) => s.removeItem)
 
   return (
-    <div className="group/row relative flex items-center gap-1.5 rounded px-1 py-0.5 pr-3 hover:bg-white/4">
+    <div className="group/row relative flex items-center gap-1.5 rounded px-1 py-0.5 pr-3 hover:bg-hover">
       <RefThumb item={item} size={26} />
 
       <Field

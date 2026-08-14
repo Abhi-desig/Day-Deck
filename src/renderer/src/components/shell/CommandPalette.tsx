@@ -243,7 +243,7 @@ export function CommandPalette() {
             aria-modal="true"
             aria-label="Command palette"
           >
-            <div className="glass overflow-hidden rounded-2xl border border-white/12 shadow-[0_32px_80px_-24px_rgb(0_0_0/0.8)]">
+            <div className="glass overflow-hidden rounded-2xl border border-hairline-strong modal-shadow">
               <div className="flex items-center gap-3 border-b border-line-soft px-4 py-3">
                 <svg
                   viewBox="0 0 16 16"

@@ -13,7 +13,10 @@ import type {
   StoryList,
   StoryListItem,
   StoryListItemPatch,
-  StoryListPatch
+  StoryListPatch,
+  NewStorySheet,
+  StorySheet,
+  StorySheetPatch
 } from '@shared/types'
 import { api } from '../lib/api'
 
@@ -33,6 +36,8 @@ interface StoryboardState {
   refs: StoryFrameRef[]
   /** References wired to the brief itself — film-wide, per board. */
   briefRefs: StoryBriefRef[]
+  /** The cast. Board-scoped, like everything else here except styles. */
+  sheets: StorySheet[]
   activeId: string | null
   ready: boolean
   loadingFrames: boolean
@@ -67,6 +72,10 @@ interface StoryboardState {
   connectBriefRef(itemId: string): Promise<void>
   disconnectBriefRef(itemId: string): Promise<void>
 
+  addSheet(input: NewStorySheet): Promise<StorySheet | null>
+  patchSheet(id: string, patch: StorySheetPatch): Promise<void>
+  removeSheet(id: string): Promise<void>
+
   dismissError(): void
 }
 
@@ -85,6 +94,7 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
   items: [],
   refs: [],
   briefRefs: [],
+  sheets: [],
   activeId: null,
   ready: false,
   loadingFrames: false,
@@ -110,15 +120,16 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
   async open(id) {
     set({ activeId: id, loadingFrames: true })
     try {
-      // One round of five, not five rounds of one: the canvas cannot draw a wire
+      // One round of six, not six rounds of one: the canvas cannot draw a wire
       // before it has both ends, so a staggered arrival would only show the user
       // a graph assembling itself.
-      const [frames, lists, items, refs, briefRefs] = await Promise.all([
+      const [frames, lists, items, refs, briefRefs, sheets] = await Promise.all([
         api.storyboards.frames(id),
         api.storyboards.lists(id),
         api.storyboards.items(id),
         api.storyboards.refs(id),
-        api.storyboards.briefRefs(id)
+        api.storyboards.briefRefs(id),
+        api.storyboards.sheets(id)
       ])
       // A slow fetch for a board the user has already navigated away from must
       // not overwrite the one they are now looking at.
@@ -129,6 +140,7 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
         items,
         refs,
         briefRefs,
+        sheets,
         loadingFrames: false,
         error: null
       })
@@ -405,6 +417,40 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
     }
   },
 
+  async addSheet(input) {
+    try {
+      const sheet = await api.storyboards.createSheet(input)
+      set((s) => ({ sheets: [...s.sheets, sheet], error: null }))
+      return sheet
+    } catch (err) {
+      set({ error: message(err) })
+      return null
+    }
+  },
+
+  async patchSheet(id, patch) {
+    const previous = get().sheets
+    set({
+      sheets: previous.map((s) => (s.id === id ? { ...s, ...patch } : s))
+    })
+    try {
+      const saved = await api.storyboards.updateSheet(id, patch)
+      set((s) => ({ sheets: s.sheets.map((x) => (x.id === id ? saved : x)) }))
+    } catch (err) {
+      set({ sheets: previous, error: message(err) })
+    }
+  },
+
+  async removeSheet(id) {
+    const previous = get().sheets
+    set({ sheets: previous.filter((s) => s.id !== id) })
+    try {
+      await api.storyboards.deleteSheet(id)
+    } catch (err) {
+      set({ sheets: previous, error: message(err) })
+    }
+  },
+
   dismissError() {
     set({ error: null })
   }
@@ -413,8 +459,15 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
 /** Switching to no board at all clears the whole graph, not just the frames. */
 const emptyGraph = (): Pick<
   StoryboardState,
-  'frames' | 'lists' | 'items' | 'refs' | 'briefRefs'
-> => ({ frames: [], lists: [], items: [], refs: [], briefRefs: [] })
+  'frames' | 'lists' | 'items' | 'refs' | 'briefRefs' | 'sheets'
+> => ({
+  frames: [],
+  lists: [],
+  items: [],
+  refs: [],
+  briefRefs: [],
+  sheets: []
+})
 
 const round = (rect: Rect): Rect => ({
   x: Math.round(rect.x),

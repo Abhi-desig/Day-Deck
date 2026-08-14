@@ -118,7 +118,7 @@ export function ReflowDialog() {
                     className={cn(
                       'rounded-lg px-3.5 py-1.5 text-[12.5px] transition-colors',
                       reflow.changes.length > 0
-                        ? 'bg-amber text-canvas hover:bg-amber-soft'
+                        ? 'bg-amber text-on-accent hover:bg-amber-soft'
                         : 'border border-line-soft text-ink-faint/60'
                     )}
                   >

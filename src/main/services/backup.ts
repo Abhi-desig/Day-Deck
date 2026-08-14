@@ -40,8 +40,12 @@ const TABLES = [
   'storyboard_frames',
   'storyboard_lists',
   'storyboard_list_items',
+  // The cast: board-scoped, so it only has to follow storyboards.
+  'storyboard_sheets',
   // Wires last of the storyboard group: it references frames and items both.
   'storyboard_frame_refs',
+  // Same, for the refs wired to the brief rather than to one scene.
+  'storyboard_brief_refs',
   // And this one references a board and a style, so it follows both.
   'storyboard_style_nodes',
   // Slots second-to-last: rolled_from is a self-reference, handled below.

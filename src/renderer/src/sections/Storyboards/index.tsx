@@ -14,6 +14,7 @@ import { EASE_OUT, SPRING } from '../../lib/motion'
 import { api } from '../../lib/api'
 import { boardDuration, formatDuration } from '../../lib/scene'
 import { useIntent } from '../../store/useShell'
+import { usePrefs } from '../../store/usePrefs'
 import { useProjects } from '../../store/useProjects'
 import { useStoryboards } from '../../store/useStoryboards'
 import { useStyles } from '../../store/useStyles'
@@ -21,6 +22,7 @@ import { ApprovalWindow } from './ApprovalWindow'
 import { Canvas, ZOOM_MAX, ZOOM_MIN, type CanvasHandle } from './Canvas'
 import { FocusMode } from './FocusMode'
 import { PromptWindow } from './PromptWindow'
+import { CastPanel } from './CastPanel'
 import { StylePanel } from './StylePanel'
 
 export function Storyboards() {
@@ -53,6 +55,9 @@ export function Storyboards() {
   /** -1 is closed. An index rather than an id, because focus mode walks in order. */
   const [focus, setFocus] = useState(-1)
   const [stylesOpen, setStylesOpen] = useState(false)
+  const [castOpen, setCastOpen] = useState(false)
+  const sceneNumbers = usePrefs((s) => s.sceneNumbers)
+  const setSceneNumbers = usePrefs((s) => s.setSceneNumbers)
   const [proposal, setProposal] = useState<ScenePlanProposal | null>(null)
   const [planning, setPlanning] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -203,6 +208,40 @@ export function Storyboards() {
 
             <button
               type="button"
+              onClick={() => setCastOpen(!castOpen)}
+              aria-expanded={castOpen}
+              title="Who is in this film, described once and repeated in every prompt"
+              className={cn(
+                'rounded-md border px-2.5 py-1 text-[11.5px] transition-colors',
+                castOpen
+                  ? 'border-line bg-raised text-ink'
+                  : 'border-line-soft text-ink-dim hover:border-line hover:text-ink'
+              )}
+            >
+              Cast
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void setSceneNumbers(!sceneNumbers)}
+              aria-pressed={sceneNumbers}
+              title={
+                sceneNumbers
+                  ? 'Hide the scene numbers on the cards'
+                  : 'Number every card by its place in the cut'
+              }
+              className={cn(
+                'rounded-md border px-2 py-1 text-[11.5px] tabular-nums transition-colors',
+                sceneNumbers
+                  ? 'border-line bg-raised text-ink'
+                  : 'border-line-soft text-ink-faint hover:border-line hover:text-ink-dim'
+              )}
+            >
+              1·2·3
+            </button>
+
+            <button
+              type="button"
               onClick={() => void plan()}
               // The same gate the service applies: brief or visual style is
               // enough to plan from. Requiring the brief specifically left this
@@ -304,6 +343,7 @@ export function Storyboards() {
       </AnimatePresence>
 
       <StylePanel open={stylesOpen} />
+      {active && <CastPanel open={castOpen} boardId={active.id} />}
 
       <AnimatePresence initial={false}>
         {offerPrompts && active && frames.length > 0 && (

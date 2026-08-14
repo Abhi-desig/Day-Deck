@@ -54,7 +54,7 @@ export function DayCard({ date, active }: DayCardProps) {
         // Today gets no amber border of its own — the beam is the marker, and
         // stacking a static amber outline under it turns the card into a
         // highlighted box instead of a card with a light running round it.
-        'border-white/10',
+        'border-hairline',
         label.isPast && !label.isToday && 'opacity-90'
       )}
     >

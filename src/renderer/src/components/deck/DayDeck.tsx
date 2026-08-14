@@ -358,7 +358,7 @@ function DeckControls({
 }) {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-5 z-[200] flex justify-center">
-      <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-white/10 bg-surface/55 p-1 shadow-lg shadow-black/40 backdrop-blur-xl">
+      <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-hairline bg-surface/55 p-1 popover-shadow backdrop-blur-xl">
         <ArrowButton direction="prev" onClick={onPrev} />
         <motion.button
           type="button"

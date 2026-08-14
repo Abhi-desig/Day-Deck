@@ -40,7 +40,7 @@ export function RefThumb({
     return (
       <span
         style={box}
-        className="grid shrink-0 place-items-center rounded border border-line-soft bg-black/20 text-[9px] text-ink-faint"
+        className="grid shrink-0 place-items-center rounded border border-line-soft bg-well text-[9px] text-ink-faint"
         aria-hidden
       >
         ·
@@ -54,7 +54,7 @@ export function RefThumb({
       onClick={onDetach}
       style={box}
       className={cn(
-        'relative shrink-0 overflow-hidden rounded border border-line-soft bg-black/30',
+        'relative shrink-0 overflow-hidden rounded border border-line-soft bg-well-deep',
         onDetach && 'nodrag cursor-pointer hover:border-amber/50'
       )}
     >
@@ -68,8 +68,12 @@ export function RefThumb({
         <Poster item={item} />
       )}
 
+      {/* The only theme-fixed colour left in the app, deliberately: this badge
+          sits on the reference's own frame, and a photograph does not get
+          lighter when the app does. Both the scrim and the ink stay dark-mode
+          values in both themes. */}
       {item.mediaKind === 'video' && (
-        <span className="absolute bottom-0 right-0 bg-black/60 px-0.5 text-[7px] leading-tight text-white/80">
+        <span className="absolute bottom-0 right-0 bg-scrim px-0.5 text-[7px] leading-tight text-white/80">
           ▶
         </span>
       )}

@@ -153,7 +153,7 @@ function Row({
         }}
         className={cn(
           'group/folder flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors',
-          over ? 'bg-amber/12 ring-1 ring-amber/40' : 'hover:bg-white/4'
+          over ? 'bg-amber/12 ring-1 ring-amber/40' : 'hover:bg-hover'
         )}
       >
         <svg

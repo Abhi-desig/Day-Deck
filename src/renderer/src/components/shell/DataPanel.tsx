@@ -136,7 +136,7 @@ export function DataPanel() {
             key="panel"
             // Same reason, and on the container rather than the close button so
             // that adding another control up here cannot silently re-break it.
-            className="no-drag glass fixed inset-y-0 right-0 z-[401] flex w-[420px] flex-col border-l border-white/10 shadow-[-24px_0_60px_-20px_rgb(0_0_0/0.7)]"
+            className="no-drag glass fixed inset-y-0 right-0 z-[401] flex w-[420px] flex-col border-l border-hairline drawer-shadow"
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}

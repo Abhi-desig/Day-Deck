@@ -683,16 +683,44 @@ function Cutoffs({ week }: { week: TrackerWeek }) {
   )
 }
 
+interface DayGroup {
+  date: DateKey
+  count: number
+  minutes: number
+  /** Categories in `CATEGORIES` order, so the sequence is the same every day. */
+  categories: { category: SlotCategory; entries: TrackerWeek['entries'] }[]
+}
+
 function Completions({ week }: { week: TrackerWeek }) {
-  // Newest first, which is the order the query already returns.
-  const byDay = useMemo(() => {
-    const groups = new Map<DateKey, TrackerWeek['entries']>()
+  /*
+   * Day, then category.
+   *
+   * Two levels rather than one because a flat day is only readable while it is
+   * short: five finished things in a row is a wall, and the one question the
+   * diary gets asked — "what did I actually spend Wednesday on" — is a question
+   * about categories. Category order comes from the fixed CATEGORIES array
+   * rather than from whatever finished first, so the eye can travel down the
+   * week and find the same band in the same place.
+   */
+  const byDay = useMemo<DayGroup[]>(() => {
+    const days = new Map<DateKey, TrackerWeek['entries']>()
     for (const entry of week.entries) {
-      const list = groups.get(entry.doneOn)
+      const list = days.get(entry.doneOn)
       if (list) list.push(entry)
-      else groups.set(entry.doneOn, [entry])
+      else days.set(entry.doneOn, [entry])
     }
-    return [...groups.entries()].sort(([a], [b]) => b.localeCompare(a))
+
+    return [...days.entries()]
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([date, entries]) => ({
+        date,
+        count: entries.length,
+        minutes: entries.reduce((sum, e) => sum + e.durationMin, 0),
+        categories: CATEGORIES.flatMap((category) => {
+          const inCategory = entries.filter((e) => e.category === category)
+          return inCategory.length ? [{ category, entries: inCategory }] : []
+        })
+      }))
   }, [week])
 
   return (
@@ -711,86 +739,135 @@ function Completions({ week }: { week: TrackerWeek }) {
               tick things off — there is nothing to write here by hand.
             </p>
           ) : (
-            <AnimatedGroup preset="blur-slide" stagger={0.02} className="p-3">
-              {byDay.map(([date, entries]) => {
-                const label = labelFor(date)
-                return (
-                  <div key={date} className="mb-1 flex gap-4 px-2 py-1.5">
-                    <div className="w-[92px] shrink-0 pt-0.5">
-                      <div
-                        className={cn(
-                          'text-[12px] tabular-nums',
-                          label.isToday ? 'text-amber' : 'text-ink-dim'
-                        )}
-                      >
-                        {label.month} {label.dayNum}
-                      </div>
-                      <div className="text-[10.5px] text-ink-faint/70">
-                        {label.weekday.slice(0, 3)}
-                      </div>
-                    </div>
-
-                    <div className="min-w-0 flex-1 space-y-1">
-                      {entries.map((entry) => (
-                        <div
-                          key={entry.slotId}
-                          className="flex items-baseline gap-2"
-                        >
-                          <span
-                            className={cn(
-                              'mt-1.5 size-1.5 shrink-0 rounded-full',
-                              CATEGORY_BAR[entry.category]
-                            )}
-                          />
-                          <span className="min-w-0 truncate text-[13px] leading-5 text-ink-dim">
-                            {entry.title}
-                          </span>
-
-                          {/* Already denormalised onto the row by the
-                              WITH_GOAL join — no second lookup here. */}
-                          {entry.sourceLabel && (
-                            <span
-                              className={cn(
-                                'max-w-[150px] shrink-0 truncate rounded-full border px-1.5 py-px text-[10px]',
-                                goalStyle(entry.sourceColor).border,
-                                goalStyle(entry.sourceColor).text
-                              )}
-                              title={entry.sourceLabel}
-                            >
-                              {entry.sourceLabel}
-                            </span>
-                          )}
-
-                          {/* The derivation rides along on the title attribute
-                              so the diary can answer "why is this in the amber
-                              box" without a second click. */}
-                          {entry.tags.map((tag) => (
-                            <span
-                              key={tag.id}
-                              className={cn(
-                                'shrink-0 rounded-full border px-1.5 py-px text-[10px]',
-                                tagStyle(tag.color).border,
-                                tagStyle(tag.color).text
-                              )}
-                              title={`${tag.label} — ${derivation(tag.origin, tag.matched)}`}
-                            >
-                              {tag.label}
-                            </span>
-                          ))}
-
-                          <span className="shrink-0 text-[10.5px] tabular-nums text-ink-faint/60">
-                            {entry.durationMin}m
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
+            <AnimatedGroup
+              preset="blur-slide"
+              stagger={0.02}
+              className="divide-y divide-line-soft/60"
+            >
+              {byDay.map((day) => (
+                <Day key={day.date} day={day} />
+              ))}
             </AnimatedGroup>
           )}
         </motion.div>
       </AnimatePresence>
     </div>
+  )
+}
+
+/**
+ * One finished day.
+ *
+ * The date gets a line of its own rather than a left-hand column. The column
+ * was costing 92px on every row to say something that changes once per day, and
+ * it forced the tasks into whatever width was left — which is why nothing below
+ * it ever lined up.
+ */
+function Day({ day }: { day: DayGroup }) {
+  const label = labelFor(day.date)
+
+  return (
+    <section className="px-4 py-3">
+      <header className="flex items-baseline gap-2 pb-2">
+        <h3
+          className={cn(
+            'text-[12.5px] tabular-nums',
+            label.isToday ? 'text-amber' : 'text-ink'
+          )}
+        >
+          {label.month} {label.dayNum}
+        </h3>
+        <span className="text-[11.5px] text-ink-faint">{label.weekday}</span>
+        <span className="flex-1" />
+        <span className="text-[11.5px] tabular-nums text-ink-faint">
+          {day.count} done · {humanMinutes(day.minutes)}
+        </span>
+      </header>
+
+      <div className="space-y-2.5">
+        {day.categories.map((group) => (
+          <div key={group.category}>
+            <div className="flex items-center gap-1.5 pb-1">
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  CATEGORY_BAR[group.category]
+                )}
+              />
+              <span className="text-[10.5px] uppercase tracking-[0.12em] text-ink-faint">
+                {CATEGORY_LABEL[group.category]}
+              </span>
+              <span className="text-[10.5px] tabular-nums text-ink-faint/60">
+                {group.entries.length}
+              </span>
+            </div>
+
+            <ul>
+              {group.entries.map((entry) => (
+                <CompletionRow key={entry.slotId} entry={entry} />
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * One finished thing.
+ *
+ * The title takes the slack and the duration is pushed into its own right-hand
+ * column, so durations line up down the whole week instead of floating along
+ * behind however many chips a row happens to carry.
+ *
+ * The two chip families are deliberately drawn differently. A goal and a tag
+ * are different questions — which plan is this, and what is it filed under —
+ * and they were both outlined chips in the same amber, so "Creative
+ * Technologist" and "Amber" read as the same kind of thing. The goal is filled,
+ * the tag stays outlined.
+ */
+function CompletionRow({ entry }: { entry: TrackerWeek['entries'][number] }) {
+  return (
+    <li className="flex items-center gap-2 py-[3px] pl-3">
+      <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-ink-dim">
+        {entry.title}
+      </span>
+
+      {/* Already denormalised onto the row by the WITH_GOAL join — no second
+          lookup here. */}
+      {entry.sourceLabel && (
+        <span
+          className={cn(
+            'max-w-[170px] shrink-0 truncate rounded-full px-1.5 py-px text-[10px]',
+            goalStyle(entry.sourceColor).soft,
+            goalStyle(entry.sourceColor).text
+          )}
+          title={entry.sourceLabel}
+        >
+          {entry.sourceLabel}
+        </span>
+      )}
+
+      {/* The derivation rides along on the title attribute so the diary can
+          answer "why is this in the amber box" without a second click. */}
+      {entry.tags.map((tag) => (
+        <span
+          key={tag.id}
+          className={cn(
+            'shrink-0 rounded-full border px-1.5 py-px text-[10px]',
+            tagStyle(tag.color).border,
+            tagStyle(tag.color).text
+          )}
+          title={`${tag.label} — ${derivation(tag.origin, tag.matched)}`}
+        >
+          {tag.label}
+        </span>
+      ))}
+
+      <span className="w-[42px] shrink-0 text-right text-[10.5px] tabular-nums text-ink-faint/70">
+        {entry.durationMin}m
+      </span>
+    </li>
   )
 }

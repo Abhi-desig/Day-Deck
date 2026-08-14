@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoStyle } from '../src/shared/types'
+import { OMNI_DURATIONS } from '../src/shared/types'
 import {
   GeminiError,
   buildPromptWriterPrompt,
@@ -62,8 +63,19 @@ const ARGS = {
   visualStyle: 'warm, documentary',
   style: null,
   existing: [],
-  references: []
+  references: [],
+  characters: []
 }
+
+/** A cast worth restating: specific enough that drift would be obvious. */
+const CAST = [
+  {
+    name: 'Maya',
+    description:
+      '24, South Asian, shoulder-length black hair, oversized grey hoodie, silver nose stud'
+  },
+  { name: 'The landlord', description: 'sixties, thick glasses, brown cardigan' }
+]
 
 const SCENES_JSON = JSON.stringify({
   scenes: [
@@ -77,7 +89,7 @@ const SCENES_JSON = JSON.stringify({
       title: 'The key',
       description: 'A hand turns a key.',
       prompt: 'macro insert, hard practical light',
-      duration_sec: 5
+      duration_sec: 6
     }
   ]
 })
@@ -98,11 +110,34 @@ describe('the scene planning prompt', () => {
   it('states the supported durations and what each is for', () => {
     const prompt = buildScenePrompt(ARGS)
 
-    // The model has to know 5 and 10 are the only renderable lengths, and why it
-    // would pick one over the other.
-    expect(prompt).toMatch(/duration_sec must be exactly one of: 5, 10/)
-    expect(prompt).toMatch(/5s for a single beat/)
-    expect(prompt).toMatch(/10s for a developing action/)
+    // The model has to know which lengths are renderable, and why it would pick
+    // one over another.
+    expect(prompt).toMatch(/duration_sec must be exactly one of: 4, 6, 8, 10/)
+    expect(prompt).toMatch(/4s: a single beat/)
+    expect(prompt).toMatch(/10s: a developing action/)
+  })
+
+  it('gives every supported duration its own guidance', () => {
+    // The sentence this replaced described only the first and last lengths, so
+    // adding 6 and 8 offered them with nothing said about when to use them.
+    const prompt = buildScenePrompt(ARGS)
+
+    for (const seconds of OMNI_DURATIONS) {
+      expect(prompt).toMatch(new RegExp(`- ${seconds}s: \\S`))
+    }
+  })
+
+  it('lists the cast and tells the breakdown to name them, not describe them', () => {
+    const prompt = buildScenePrompt({ ...ARGS, characters: CAST })
+
+    expect(prompt).toContain('CAST')
+    expect(prompt).toContain('Maya: 24, South Asian')
+    expect(prompt).toMatch(/Do not re-describe how they look/)
+  })
+
+  it('says nothing about a cast when there is none', () => {
+    // An empty heading would invite the model to invent one.
+    expect(buildScenePrompt(ARGS)).not.toContain('CAST')
   })
 
   it('declines to write prompts — that is stage two', () => {
@@ -188,7 +223,7 @@ describe('planning scenes', () => {
 
     expect(scenes.map((s) => s.title)).toEqual(['Arrival', 'The key'])
     expect(scenes[0].durationSec).toBe(10)
-    expect(scenes[1].durationSec).toBe(5)
+    expect(scenes[1].durationSec).toBe(6)
   })
 
   it('sends the key in a header, never the query string', async () => {
@@ -211,7 +246,7 @@ describe('planning scenes', () => {
     )
     const scene =
       body.generationConfig.responseJsonSchema.properties.scenes.items
-    expect(scene.properties.duration_sec.enum).toEqual([5, 10])
+    expect(scene.properties.duration_sec.enum).toEqual([4, 6, 8, 10])
   })
 
   it('snaps a duration the model invented anyway', async () => {
@@ -233,7 +268,9 @@ describe('planning scenes', () => {
     ])
 
     const scenes = await planScenes(ARGS)
-    expect(scenes.map((s) => s.durationSec)).toEqual([5, 10, 5])
+    // 7 sits between 6 and 8; the tie goes to the shorter, which is what
+    // `snapDuration`'s strict comparison does.
+    expect(scenes.map((s) => s.durationSec)).toEqual([6, 10, 4])
   })
 
   it('defaults a missing duration rather than dropping the scene', async () => {
@@ -248,7 +285,7 @@ describe('planning scenes', () => {
     ])
 
     const scenes = await planScenes(ARGS)
-    expect(scenes[0].durationSec).toBe(5)
+    expect(scenes[0].durationSec).toBe(4)
   })
 
   it('skips a scene with no description', async () => {
@@ -257,8 +294,8 @@ describe('planning scenes', () => {
         body: reply(
           JSON.stringify({
             scenes: [
-              { title: 'Real', description: 'something', duration_sec: 5 },
-              { title: 'Hollow', description: '  ', duration_sec: 5 }
+              { title: 'Real', description: 'something', duration_sec: 6 },
+              { title: 'Hollow', description: '  ', duration_sec: 6 }
             ]
           })
         )
@@ -304,6 +341,7 @@ const PROMPT_ARGS = {
   visualStyle: 'warm, documentary',
   style: null,
   briefReferences: ['moodboard.png (image) '.trim()],
+  characters: [],
   scenes: [
     {
       number: 1,
@@ -356,6 +394,47 @@ describe('the prompt writing prompt', () => {
     expect(prompt).toContain('- Lens: 35mm anamorphic')
     expect(prompt).toMatch(/in full and in the same wording/)
     expect(prompt).toMatch(/Keep the look wording identical/)
+  })
+
+  it('demands a character be restated in full, not referred back to', () => {
+    // The same mechanism as the look, for the other half of consistency: the
+    // generator writing shot 9 has never seen shot 2.
+    const prompt = buildPromptWriterPrompt({
+      ...PROMPT_ARGS,
+      characters: CAST
+    })
+
+    expect(prompt).toContain('CAST')
+    expect(prompt).toContain('Maya: 24, South Asian')
+    expect(prompt).toMatch(/restate their description in full, in this exact wording/)
+  })
+
+  it('drops a half-written character rather than sending it', () => {
+    // A named character with no description would have the model invent one,
+    // which is the exact drift the cast exists to prevent.
+    const prompt = buildPromptWriterPrompt({
+      ...PROMPT_ARGS,
+      characters: [
+        { name: 'Nameless', description: '' },
+        { name: '', description: 'a description with nobody attached' }
+      ]
+    })
+
+    expect(prompt).not.toContain('CAST')
+  })
+
+  it('ties the amount of action to the scene length', () => {
+    // Every scene already arrives tagged [10s]; without this the model has no
+    // idea what that number implies about how much can happen.
+    expect(buildPromptWriterPrompt(PROMPT_ARGS)).toMatch(
+      /Match the amount of action to the length/
+    )
+  })
+
+  it('fixes the order a prompt states things in', () => {
+    expect(buildPromptWriterPrompt(PROMPT_ARGS)).toMatch(
+      /subject, action, camera, lens, lighting, grade, film stock, aspect/
+    )
   })
 })
 

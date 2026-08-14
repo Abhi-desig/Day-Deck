@@ -459,5 +459,37 @@ export const MIGRATIONS: readonly string[] = [
   -- sorted out of this text by the model, and a bad sort loses nothing because
   -- this copy is never touched by the sorter.
   ALTER TABLE video_styles ADD COLUMN source_text TEXT NOT NULL DEFAULT '';
+  `,
+
+  /* v11 — character sheets, and the supported generation lengths change. */
+  `
+  -- The cast. A style locks how the film is *shot*; a sheet locks who is *in*
+  -- it — the other half of shot-to-shot consistency, and the half a prompt
+  -- cannot carry on its own ("the same woman as before" means nothing to a
+  -- generator that has never seen the previous shot).
+  --
+  -- Board-scoped, unlike video_styles: a look is a house style worth reusing
+  -- across films, a cast belongs to one film.
+  --
+  -- 'location' is accepted but unused by the UI today. It costs one CHECK
+  -- branch now and saves a migration later, and these are forward-only.
+  CREATE TABLE storyboard_sheets (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL DEFAULT 'character'
+                CHECK (kind IN ('character','location')),
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    sort_index  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_sheets_board ON storyboard_sheets(board_id);
+
+  -- The generator's real lengths are 4/6/8/10; 5 was never one of them. A row
+  -- left at 5 would render with no length selected and be rejected by the IPC
+  -- validator on the next edit. Rounded up rather than to the arithmetic
+  -- nearest — 4 and 6 are equidistant, and lengthening a shot someone already
+  -- timed loses nothing where shortening it cuts a beat.
+  UPDATE storyboard_frames SET duration_sec = 6 WHERE duration_sec = 5;
   `
 ]

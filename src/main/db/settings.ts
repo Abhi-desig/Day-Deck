@@ -1,3 +1,4 @@
+import type { UiPrefs } from '@shared/types'
 import type { Db } from './index'
 
 /**
@@ -52,8 +53,32 @@ export const SETTING = {
   codeHome: 'projects.code_home',
   creativeHome: 'projects.creative_home',
   /** Gemini calls allowed per minute, per feature slot. */
-  geminiRatePerMinute: 'gemini.rate_per_minute'
+  geminiRatePerMinute: 'gemini.rate_per_minute',
+
+  /**
+   * Appearance. Stored here rather than in the renderer so the main process can
+   * read it before the window exists — the window's own background colour has
+   * to be right, or launching in light mode flashes the dark canvas first.
+   */
+  theme: 'ui.theme',
+  /** Whether storyboard scene cards show their position on the board. */
+  sceneNumbers: 'ui.scene_numbers'
 } as const
 
 /** 2½ hours of focused study a day is already an ambitious default. */
 export const DEFAULT_DAILY_CAP = 150
+
+/**
+ * Every preference the interface remembers, read in one go.
+ *
+ * Kept here rather than assembled in the IPC handler because `createWindow`
+ * needs the theme too, before any IPC exists.
+ */
+export function getUiPrefs(db: Db): UiPrefs {
+  return {
+    theme: getSetting(db, SETTING.theme) === 'light' ? 'light' : 'dark',
+    // On by default: the number is the only thing telling scene 1 from scene 10
+    // once the planner has given every card a name.
+    sceneNumbers: getBool(db, SETTING.sceneNumbers, true)
+  }
+}

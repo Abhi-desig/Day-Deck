@@ -376,3 +376,73 @@ describe('brief refs', () => {
     expect(boards.listBriefRefs(db, other.id)).toEqual([])
   })
 })
+
+describe('character sheets', () => {
+  it('creates one with a name and a description', () => {
+    const board = boards.createBoard(db, { title: 'Launch film' })
+    const sheet = boards.createSheet(db, {
+      boardId: board.id,
+      name: 'Maya',
+      description: '24, oversized grey hoodie, silver nose stud'
+    })
+
+    expect(sheet.kind).toBe('character')
+    expect(sheet.name).toBe('Maya')
+    expect(boards.listSheets(db, board.id)).toHaveLength(1)
+  })
+
+  it('defaults to a character rather than making the caller say so', () => {
+    const board = boards.createBoard(db, { title: 'Launch film' })
+
+    expect(boards.createSheet(db, { boardId: board.id }).kind).toBe('character')
+  })
+
+  it('edits the description without touching the name', () => {
+    const board = boards.createBoard(db, { title: 'Launch film' })
+    const sheet = boards.createSheet(db, { boardId: board.id, name: 'Maya' })
+    const saved = boards.updateSheet(db, sheet.id, {
+      description: 'thick glasses, brown cardigan'
+    })
+
+    expect(saved.name).toBe('Maya')
+    expect(saved.description).toBe('thick glasses, brown cardigan')
+  })
+
+  it('orders by sort index, then by age', () => {
+    const board = boards.createBoard(db, { title: 'Launch film' })
+    boards.createSheet(db, { boardId: board.id, name: 'First' })
+    boards.createSheet(db, { boardId: board.id, name: 'Second' })
+
+    expect(boards.listSheets(db, board.id).map((s) => s.name)).toEqual([
+      'First',
+      'Second'
+    ])
+  })
+
+  it('is scoped to its board — a cast belongs to one film', () => {
+    const mine = boards.createBoard(db, { title: 'Mine' })
+    const other = boards.createBoard(db, { title: 'Other' })
+    boards.createSheet(db, { boardId: mine.id, name: 'Maya' })
+
+    expect(boards.listSheets(db, other.id)).toEqual([])
+  })
+
+  it('cascades away with its board', () => {
+    const board = boards.createBoard(db, { title: 'Launch film' })
+    boards.createSheet(db, { boardId: board.id, name: 'Maya' })
+    boards.deleteBoard(db, board.id)
+
+    expect(boards.listSheets(db, board.id)).toEqual([])
+  })
+
+  it('deletes one without disturbing the rest of the cast', () => {
+    const board = boards.createBoard(db, { title: 'Launch film' })
+    const maya = boards.createSheet(db, { boardId: board.id, name: 'Maya' })
+    boards.createSheet(db, { boardId: board.id, name: 'The landlord' })
+    boards.deleteSheet(db, maya.id)
+
+    expect(boards.listSheets(db, board.id).map((s) => s.name)).toEqual([
+      'The landlord'
+    ])
+  })
+})

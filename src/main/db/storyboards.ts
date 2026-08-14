@@ -7,6 +7,8 @@ import type {
   NewStoryFrame,
   NewStoryList,
   NewStoryListItem,
+  NewStorySheet,
+  SheetKind,
   Storyboard,
   StoryboardPatch,
   StoryBriefRef,
@@ -16,9 +18,11 @@ import type {
   StoryList,
   StoryListItem,
   StoryListPatch,
-  StoryListItemPatch
+  StoryListItemPatch,
+  StorySheet,
+  StorySheetPatch
 } from '@shared/types'
-import { FRAME_H, FRAME_W, GOAL_COLORS } from '@shared/types'
+import { FRAME_H, FRAME_W, GOAL_COLORS, SHEET_KINDS } from '@shared/types'
 import type { Db } from './index'
 
 /**
@@ -555,6 +559,113 @@ export function updateItem(
 
 export function deleteItem(db: Db, id: string): void {
   db.prepare(`DELETE FROM storyboard_list_items WHERE id = ?`).run(id)
+}
+
+/* ------------------------------------------------------ character sheets */
+
+interface SheetRow {
+  id: string
+  board_id: string
+  kind: string
+  name: string
+  description: string
+  sort_index: number
+  created_at: string
+}
+
+const isSheetKind = (value: string): value is SheetKind =>
+  (SHEET_KINDS as readonly string[]).includes(value)
+
+const toSheet = (r: SheetRow): StorySheet => ({
+  id: r.id,
+  boardId: r.board_id,
+  kind: isSheetKind(r.kind) ? r.kind : 'character',
+  name: r.name,
+  description: r.description,
+  sortIndex: r.sort_index,
+  createdAt: r.created_at
+})
+
+export function listSheets(db: Db, boardId: string): StorySheet[] {
+  return db
+    .prepare<[string], SheetRow>(
+      `SELECT * FROM storyboard_sheets
+        WHERE board_id = ?
+        ORDER BY sort_index ASC, created_at ASC`
+    )
+    .all(boardId)
+    .map(toSheet)
+}
+
+export function getSheet(db: Db, id: string): StorySheet {
+  const row = db
+    .prepare<[string], SheetRow>(`SELECT * FROM storyboard_sheets WHERE id = ?`)
+    .get(id)
+  if (!row) throw new Error(`Character sheet not found: ${id}`)
+  return toSheet(row)
+}
+
+export function createSheet(db: Db, input: NewStorySheet): StorySheet {
+  const id = randomUUID()
+  const next = db
+    .prepare<[string], { next: number }>(
+      `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next
+         FROM storyboard_sheets WHERE board_id = ?`
+    )
+    .get(input.boardId)
+
+  db.prepare(
+    `INSERT INTO storyboard_sheets
+       (id, board_id, kind, name, description, sort_index, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.boardId,
+    input.kind ?? 'character',
+    (input.name ?? '').trim(),
+    input.description ?? '',
+    input.sortIndex ?? next?.next ?? 0,
+    new Date().toISOString()
+  )
+
+  return getSheet(db, id)
+}
+
+const SHEET_PATCH_COLUMNS: Record<keyof StorySheetPatch, string> = {
+  kind: 'kind',
+  name: 'name',
+  description: 'description',
+  sortIndex: 'sort_index'
+}
+
+export function updateSheet(
+  db: Db,
+  id: string,
+  patch: StorySheetPatch
+): StorySheet {
+  const sets: string[] = []
+  const values: unknown[] = []
+
+  for (const [key, column] of Object.entries(SHEET_PATCH_COLUMNS)) {
+    const value = patch[key as keyof StorySheetPatch]
+    if (value === undefined) continue
+    sets.push(`${column} = ?`)
+    // The description is the one field here that is deliberately multi-line —
+    // trimming its ends is safe, collapsing it would not be.
+    values.push(typeof value === 'string' ? value.trim() : value)
+  }
+
+  if (sets.length) {
+    db.prepare(
+      `UPDATE storyboard_sheets SET ${sets.join(', ')} WHERE id = ?`
+    ).run(...values, id)
+  }
+
+  return getSheet(db, id)
+}
+
+export function deleteSheet(db: Db, id: string): void {
+  db.prepare(`DELETE FROM storyboard_sheets WHERE id = ?`).run(id)
 }
 
 /* ------------------------------------------------------------------ wires */

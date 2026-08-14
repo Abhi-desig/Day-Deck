@@ -61,6 +61,33 @@
   --color-paper-blush: #f5b8c1;
   --color-paper-lilac: #cbb8f0;
 
+  /*
+   * Surfaces and edges that used to be written as `bg-black/20` and
+   * `border-white/10` at 44 call sites.
+   *
+   * A `--color-*` token is allowed to carry alpha, and Tailwind compiles the
+   * `/N` variants through `color-mix`, so `bg-well` is exactly what
+   * `bg-black/20` was — except it now has a light value too, and there is one
+   * place to change it rather than twenty files.
+   */
+  --color-well-soft: rgb(0 0 0 / 0.1);
+  --color-well: rgb(0 0 0 / 0.2);
+  --color-well-deep: rgb(0 0 0 / 0.3);
+
+  --color-hairline: rgb(255 255 255 / 0.1);
+  --color-hairline-strong: rgb(255 255 255 / 0.12);
+
+  --color-hover: rgb(255 255 255 / 0.05);
+  --color-hover-strong: rgb(255 255 255 / 0.08);
+
+  /* Text on a saturated accent fill. Near-white ink on light amber is 2.3:1,
+     so this cannot simply be `canvas` in both themes. */
+  --color-on-accent: #16161b;
+
+  /* Over a photograph, not over the UI. The photo does not change with the
+     theme, so neither does this. */
+  --color-scrim: rgb(0 0 0 / 0.6);
+
   --radius-card: 22px;
   --radius-slot: 12px;
 
@@ -69,6 +96,236 @@
     'Segoe UI', sans-serif;
   --font-mono:
     ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/*
+ * Light theme.
+ *
+ * Unlayered on purpose. Tailwind emits `@theme` into `@layer theme`, and an
+ * unlayered author rule outranks every author layer whatever its specificity —
+ * so this one block re-points every `--color-*` the utilities reference, and
+ * the ~300 `/N` alpha variants re-derive through `color-mix` for free.
+ *
+ * Shadows are deliberately not here. Tailwind bakes `--shadow-*` into the
+ * utility body at build time rather than emitting `var(--shadow-x)`, so a token
+ * swap would silently never reach them. The elevation ramp is below, as plain
+ * custom properties.
+ *
+ * The neutral ramp keeps its existing direction — canvas darkest, raised
+ * lightest — so `bg-raised` still means "lifted" and nothing has to be
+ * relabelled. Only the ends move.
+ */
+[data-theme='light'] {
+  /* A clearly grey room so a genuinely white card has something to sit on;
+     `raised` lands between the two, which is how a segmented control reads on a
+     white sheet. */
+  --color-canvas: #e8eaf0;
+  --color-surface: #ffffff;
+  --color-raised: #f5f6fa;
+  --color-line: #c3c7d2;
+  --color-line-soft: #dcdfe7;
+
+  /* Re-spaced rather than inverted. `text-ink-faint/50…/80` appears 78 times,
+     and alpha fades toward white here just as it fades toward black in the dark
+     theme — these values hold the same ratios at every stop. */
+  --color-ink: #191b23;
+  --color-ink-dim: #494e5d;
+  --color-ink-faint: #5a5f6e;
+
+  /* A deep ochre rather than a glowing one: amber has to clear 4.5:1 as text
+     and still work as a solid fill. `soft` inverts to *darker* — the name means
+     "the one that reads against the ground", and hover correctly darkens. */
+  --color-amber: #9a5b00;
+  --color-amber-soft: #7a4400;
+  --color-amber-deep: #f4e3c0;
+
+  --color-cat-vibe: #2f52c4;
+  --color-cat-amber: #9a5b00;
+  --color-cat-learn: #0b7263;
+
+  --color-goal-amber: #9a5b00;
+  --color-goal-violet: #6a41c2;
+  --color-goal-sky: #2f52c4;
+  --color-goal-mint: #0b7263;
+  --color-goal-rose: #b92544;
+
+  /* Kept visibly distinct from the goal ramp above, for the reason the goal and
+     tag palettes were split in the first place: they appear side by side on one
+     slot row and must not read as the same axis. Chips render at 10px, so 4.5:1
+     is a floor rather than a target. */
+  --color-tag-amber: #9a5b00;
+  --color-tag-violet: #7644cb;
+  --color-tag-sky: #265dbe;
+  --color-tag-mint: #0b7263;
+  --color-tag-rose: #b92544;
+  --color-tag-coral: #b64420;
+  --color-tag-lime: #4a730c;
+  --color-tag-cyan: #08687d;
+
+  /* Paper is the hardest case: each of these is a 16% wash, a 35% border, a
+     dot, *and* the note's own ink. The binding constraint is ink on its own
+     wash, which is why butter sits a notch darker than the rest would suggest. */
+  --color-paper-butter: #7d5f0e;
+  --color-paper-mint: #0f654c;
+  --color-paper-sky: #265996;
+  --color-paper-blush: #a93950;
+  --color-paper-lilac: #6444ae;
+
+  --color-well-soft: rgb(15 20 35 / 0.03);
+  --color-well: rgb(15 20 35 / 0.052);
+  --color-well-deep: rgb(15 20 35 / 0.075);
+
+  --color-hairline: rgb(15 20 35 / 0.1);
+  --color-hairline-strong: rgb(15 20 35 / 0.13);
+
+  --color-hover: rgb(15 20 35 / 0.045);
+  --color-hover-strong: rgb(15 20 35 / 0.075);
+
+  --color-on-accent: #ffffff;
+  /* --color-scrim deliberately not overridden — see its definition. */
+}
+
+/*
+ * The elevation ramp.
+ *
+ * Plain custom properties rather than `@theme`, because Tailwind resolves
+ * `--shadow-*` at build time — see the note above. The classes that consume
+ * these live in `@layer utilities` at the bottom of this file.
+ */
+:root {
+  --elev-card:
+    0 2px 6px -2px rgb(0 0 0 / 0.55), 0 24px 60px -14px rgb(0 0 0 / 0.78);
+  --elev-card-soft: 0 14px 36px -14px rgb(0 0 0 / 0.62);
+  --elev-popover:
+    0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+  --elev-modal: 0 40px 80px -30px rgb(0 0 0 / 0.8);
+  --elev-drawer: -24px 0 60px -20px rgb(0 0 0 / 0.7);
+  --elev-dock: 0 20px 50px -16px rgb(0 0 0 / 0.75);
+  --elev-lift: drop-shadow(0 18px 36px rgb(0 0 0 / 0.55));
+
+  /* A hairline of light along the top edge — a dark-theme device, faking an
+     edge catching the light. */
+  --elev-edge: inset 0 1px 0 0 rgb(255 255 255 / 0.055);
+  --elev-edge-soft: inset 0 1px 0 0 rgb(255 255 255 / 0.035);
+}
+
+[data-theme='light'] {
+  /*
+   * Stacks, never a single blur. Each is a hairline ring (the optical edge that
+   * replaces the dark theme's inset sheen), a 1–3px contact shadow so the card
+   * reads as *touching* the surface rather than hovering over it, and one or
+   * two wide ambients with heavy negative spread. Opacities stay low; the depth
+   * comes from stacking.
+   *
+   * Tinted `rgb(15 20 35)` rather than pure black — a faintly blue-black shadow
+   * reads as daylight instead of stage lighting.
+   */
+  --elev-card:
+    0 0 0 0.5px rgb(15 20 35 / 0.05), 0 2px 4px -2px rgb(15 20 35 / 0.1),
+    0 12px 28px -8px rgb(15 20 35 / 0.13),
+    0 32px 64px -24px rgb(15 20 35 / 0.16);
+  --elev-card-soft:
+    0 0 0 0.5px rgb(15 20 35 / 0.04), 0 1px 2px -1px rgb(15 20 35 / 0.09),
+    0 6px 16px -6px rgb(15 20 35 / 0.11);
+  --elev-popover:
+    0 0 0 0.5px rgb(15 20 35 / 0.06), 0 2px 6px -2px rgb(15 20 35 / 0.1),
+    0 12px 32px -12px rgb(15 20 35 / 0.18);
+  --elev-modal:
+    0 0 0 0.5px rgb(15 20 35 / 0.06), 0 8px 16px -8px rgb(15 20 35 / 0.12),
+    0 30px 60px -20px rgb(15 20 35 / 0.2),
+    0 60px 120px -40px rgb(15 20 35 / 0.14);
+  --elev-drawer:
+    -0.5px 0 0 0 rgb(15 20 35 / 0.07), -8px 0 16px -12px rgb(15 20 35 / 0.1),
+    -24px 0 48px -20px rgb(15 20 35 / 0.16);
+  --elev-dock:
+    0 0 0 0.5px rgb(15 20 35 / 0.05), 0 2px 8px -4px rgb(15 20 35 / 0.1),
+    0 20px 44px -16px rgb(15 20 35 / 0.16);
+  --elev-lift:
+    drop-shadow(0 10px 20px rgb(15 20 35 / 0.14))
+    drop-shadow(0 24px 40px rgb(15 20 35 / 0.09));
+
+  /* Inverted: a dark hairline along the bottom, which is what a real card edge
+     does under overhead light. */
+  --elev-edge: inset 0 -1px 0 0 rgb(15 20 35 / 0.05);
+  --elev-edge-soft: inset 0 -1px 0 0 rgb(15 20 35 / 0.035);
+}
+
+/*
+ * Decorative colour that reaches the DOM through inline styles rather than
+ * classes — a project card's spotlight, the border beam's sweep, the aurora
+ * behind the plan composer. Tailwind never sees these, so they need their own
+ * pair or they stay dark-tuned forever.
+ */
+:root {
+  --glow-amber: rgb(255 176 32 / 0.42);
+  --glow-violet: rgb(167 139 250 / 0.42);
+  --glow-sky: rgb(124 156 255 / 0.42);
+  --glow-mint: rgb(94 234 212 / 0.4);
+  --glow-rose: rgb(251 113 133 / 0.4);
+
+  /* The beam ramps from a faint tail into a white-hot head. */
+  --beam-tail: rgb(255 176 32 / 0.18);
+  --beam-body: rgb(255 201 95 / 0.62);
+  --beam-head: #ffe9b8;
+  --beam-core: #fffaf0;
+
+  --aurora-1: rgb(255 176 32 / 0.2);
+  --aurora-2: rgb(124 156 255 / 0.16);
+  --aurora-3: rgb(94 234 212 / 0.11);
+}
+
+[data-theme='light'] {
+  /* A 42% bright spotlight on a white card is a stain, not a glow. Deeper hue,
+     a third of the alpha. */
+  --glow-amber: rgb(154 91 0 / 0.16);
+  --glow-violet: rgb(106 65 194 / 0.16);
+  --glow-sky: rgb(47 82 196 / 0.16);
+  --glow-rose: rgb(185 37 68 / 0.15);
+  --glow-mint: rgb(11 114 99 / 0.15);
+
+  /* Inverted: on white the brightest point of the dark beam is invisible, so
+     the head becomes the *deepest* point instead of the lightest. */
+  --beam-tail: rgb(154 91 0 / 0.2);
+  --beam-body: rgb(122 68 0 / 0.75);
+  --beam-head: #8a5000;
+  --beam-core: #6d3d00;
+
+  --aurora-1: rgb(255 168 20 / 0.22);
+  --aurora-2: rgb(90 130 255 / 0.18);
+  --aurora-3: rgb(20 190 165 / 0.14);
+}
+
+/*
+ * Sticker paper, which is the only thing in the app with a coloured shadow.
+ *
+ * On a dark desk a note glows in its own hue. On a light one that glow is
+ * invisible at best and grubby at worst, so light gets a real neutral contact
+ * shadow with only a hint of the hue left in the ambient.
+ */
+:root {
+  --elev-paper-butter: 0 10px 30px -12px rgb(242 217 139 / 0.35);
+  --elev-paper-mint: 0 10px 30px -12px rgb(168 230 207 / 0.35);
+  --elev-paper-sky: 0 10px 30px -12px rgb(168 200 240 / 0.35);
+  --elev-paper-blush: 0 10px 30px -12px rgb(245 184 193 / 0.35);
+  --elev-paper-lilac: 0 10px 30px -12px rgb(203 184 240 / 0.35);
+}
+
+[data-theme='light'] {
+  --elev-paper-butter:
+    0 0 0 0.5px rgb(125 95 14 / 0.1), 0 1px 2px -1px rgb(15 20 35 / 0.1),
+    0 8px 20px -8px rgb(125 95 14 / 0.22);
+  --elev-paper-mint:
+    0 0 0 0.5px rgb(15 101 76 / 0.1), 0 1px 2px -1px rgb(15 20 35 / 0.1),
+    0 8px 20px -8px rgb(15 101 76 / 0.22);
+  --elev-paper-sky:
+    0 0 0 0.5px rgb(38 89 150 / 0.1), 0 1px 2px -1px rgb(15 20 35 / 0.1),
+    0 8px 20px -8px rgb(38 89 150 / 0.22);
+  --elev-paper-blush:
+    0 0 0 0.5px rgb(169 57 80 / 0.1), 0 1px 2px -1px rgb(15 20 35 / 0.1),
+    0 8px 20px -8px rgb(169 57 80 / 0.22);
+  --elev-paper-lilac:
+    0 0 0 0.5px rgb(100 68 174 / 0.1), 0 1px 2px -1px rgb(15 20 35 / 0.1),
+    0 8px 20px -8px rgb(100 68 174 / 0.22);
 }
 
 @layer base {
@@ -297,18 +554,137 @@
     color: rgb(255 255 255 / 0.22);
   }
 
-  /* Lifts the focused card off the canvas: a contact shadow, a wide ambient
-     one, and a hairline of light along the top edge. */
+  /* White on white otherwise — this is the one React Flow colour that is not
+     already reading a token. */
+  [data-theme='light'] .react-flow__attribution a {
+    color: rgb(15 20 35 / 0.28);
+  }
+
+  /*
+   * The elevation ramp, applied.
+   *
+   * Hand-written rather than Tailwind `shadow-*` utilities because those bake
+   * their value at build time and would not follow a theme swap. Six levels,
+   * each one place to change.
+   */
   .card-shadow {
-    box-shadow:
-      0 2px 6px -2px rgb(0 0 0 / 0.55),
-      0 24px 60px -14px rgb(0 0 0 / 0.78),
-      inset 0 1px 0 0 rgb(255 255 255 / 0.055);
+    box-shadow: var(--elev-card), var(--elev-edge);
   }
 
   .card-shadow-soft {
-    box-shadow:
-      0 14px 36px -14px rgb(0 0 0 / 0.62),
-      inset 0 1px 0 0 rgb(255 255 255 / 0.035);
+    box-shadow: var(--elev-card-soft), var(--elev-edge-soft);
+  }
+
+  .popover-shadow {
+    box-shadow: var(--elev-popover);
+  }
+
+  .modal-shadow {
+    box-shadow: var(--elev-modal);
+  }
+
+  .drawer-shadow {
+    box-shadow: var(--elev-drawer);
+  }
+
+  .dock-shadow {
+    box-shadow: var(--elev-dock);
+  }
+
+  /* A `filter`, not a `box-shadow`: this one follows the alpha of what it is
+     applied to, and the light value needs two stacked drop-shadows, which
+     `drop-shadow-[…]` cannot express. */
+  .lift-shadow {
+    filter: var(--elev-lift);
+  }
+
+  .paper-shadow-butter {
+    box-shadow: var(--elev-paper-butter);
+  }
+  .paper-shadow-mint {
+    box-shadow: var(--elev-paper-mint);
+  }
+  .paper-shadow-sky {
+    box-shadow: var(--elev-paper-sky);
+  }
+  .paper-shadow-blush {
+    box-shadow: var(--elev-paper-blush);
+  }
+  .paper-shadow-lilac {
+    box-shadow: var(--elev-paper-lilac);
+  }
+
+  /*
+   * Light-mode materials.
+   *
+   * Layered rather than unlayered — `[data-theme] .glass` at 0,1,1 already
+   * beats `.glass` at 0,1,0 inside the same layer, and hoisting these out would
+   * make them beat unrelated Tailwind utilities for no benefit.
+   */
+  [data-theme='light'] .app-ambient {
+    background-color: var(--color-canvas);
+    /* The hues deepen and the alphas hold rather than drop. A pastel at 10%
+       over a light ground reads as dirty grey; a saturated hue at 10% reads as
+       a tint. This is the opposite of the intuitive port. */
+    background-image:
+      radial-gradient(
+        900px 700px at 52% 42%,
+        rgb(255 176 32 / 0.1),
+        transparent 68%
+      ),
+      radial-gradient(
+        1100px 620px at 10% -8%,
+        rgb(255 168 20 / 0.16),
+        transparent 60%
+      ),
+      radial-gradient(
+        900px 560px at 95% 10%,
+        rgb(90 130 255 / 0.13),
+        transparent 62%
+      ),
+      radial-gradient(
+        860px 700px at 62% 110%,
+        rgb(20 190 165 / 0.1),
+        transparent 60%
+      );
+  }
+
+  /*
+   * The blur stays — frosted-on-light is the whole point of the material, and
+   * it is what a Sonoma sidebar does. Blur goes up because a light ground has
+   * less tonal range to work with, and saturation comes down because 180% over
+   * light content pushes the ambient pools into candy.
+   *
+   * The `-webkit-` warning on the dark rule above applies verbatim here.
+   */
+  [data-theme='light'] .glass {
+    background-color: rgb(255 255 255 / 0.72);
+    background-image: linear-gradient(
+      to bottom,
+      rgb(255 255 255 / 0.55),
+      rgb(255 255 255 / 0.14) 40%,
+      rgb(255 255 255 / 0) 72%
+    );
+    backdrop-filter: blur(30px) saturate(150%);
+  }
+
+  /* Below `.glass`, same as in dark — the peeks have to recede behind the
+     focused card. On a light ground receding means greyer, not darker. */
+  [data-theme='light'] .glass-flat {
+    background-color: rgb(250 251 253 / 0.94);
+    background-image: linear-gradient(
+      to bottom,
+      rgb(255 255 255 / 0.7),
+      rgb(255 255 255 / 0) 45%
+    );
+  }
+
+  [data-theme='light'] .react-flow {
+    background-color: rgb(248 249 252 / 0.7);
+  }
+
+  [data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+    background: #a9aebc;
+    background-clip: content-box;
   }
 }

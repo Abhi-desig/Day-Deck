@@ -35,6 +35,7 @@ import type {
   NewStoryFrame,
   NewStoryList,
   NewStoryListItem,
+  NewStorySheet,
   NewStoryStyleNode,
   NewTag,
   NewVideoStyle,
@@ -70,12 +71,16 @@ import type {
   StoryListItem,
   StoryListItemPatch,
   StoryListPatch,
+  StorySheet,
+  StorySheetPatch,
   StoryStyleNode,
   SubdivideResult,
   Tag,
   TagOrigin,
   TagPatch,
+  ThemeName,
   TrackerWeek,
+  UiPrefs,
   VideoStyle,
   VideoStylePatch,
   WeeklyTemplate
@@ -171,6 +176,11 @@ export const IPC = {
   briefRefsList: 'briefRefs:list',
   briefRefsCreate: 'briefRefs:create',
   briefRefsDelete: 'briefRefs:delete',
+  /** The cast: named characters restated verbatim in every prompt showing them. */
+  sheetsList: 'sheets:list',
+  sheetsCreate: 'sheets:create',
+  sheetsUpdate: 'sheets:update',
+  sheetsDelete: 'sheets:delete',
   /** Opens a native picker for reference media. Returns the chosen paths. */
   mediaPick: 'media:pick',
 
@@ -206,6 +216,17 @@ export const IPC = {
   /** Gemini calls per minute, per feature slot. */
   settingsGetRate: 'settings:getRate',
   settingsSetRate: 'settings:setRate',
+  /**
+   * Appearance and view preferences.
+   *
+   * One pair for every boolean-or-enum the UI wants to remember across launches.
+   * They live in SQLite with everything else rather than in localStorage so a
+   * backup carries them and the main process can read the theme before the
+   * window is built.
+   */
+  settingsGetPrefs: 'settings:getPrefs',
+  settingsSetTheme: 'settings:setTheme',
+  settingsSetSceneNumbers: 'settings:setSceneNumbers',
   geminiModels: 'gemini:models',
 
   projectsList: 'projects:list',
@@ -431,6 +452,15 @@ export interface DeckApi {
     disconnectBrief(boardId: string, itemId: string): Promise<void>
 
     /**
+     * The cast. Board-scoped, because a look is reusable across films and a
+     * cast is not.
+     */
+    sheets(boardId: string): Promise<StorySheet[]>
+    createSheet(input: NewStorySheet): Promise<StorySheet>
+    updateSheet(id: string, patch: StorySheetPatch): Promise<StorySheet>
+    deleteSheet(id: string): Promise<void>
+
+    /**
      * Native file picker for reference media. Returns absolute paths and their
      * kind; nothing is copied, so these are the paths that get stored.
      */
@@ -510,6 +540,11 @@ export interface DeckApi {
     /** Gemini calls allowed per minute, per feature slot. */
     rate(): Promise<number>
     setRate(perMinute: number): Promise<number>
+
+    /** Everything the UI remembers between launches, in one round trip. */
+    prefs(): Promise<UiPrefs>
+    setTheme(theme: ThemeName): Promise<ThemeName>
+    setSceneNumbers(on: boolean): Promise<boolean>
   }
   projects: {
     list(): Promise<Project[]>

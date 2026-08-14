@@ -1108,7 +1108,7 @@ export const FRAME_H = 240
  * renderer that builds the dropdown, so the two can never disagree about what a
  * legal length is. Changing what the model supports is a change to this line.
  */
-export const OMNI_DURATIONS = [5, 10] as const
+export const OMNI_DURATIONS = [4, 6, 8, 10] as const
 
 export type OmniDuration = (typeof OMNI_DURATIONS)[number]
 
@@ -1243,6 +1243,83 @@ export interface StoryBriefRef {
   itemId: string
   createdAt: string
 }
+
+/* ------------------------------------------------------------ appearance */
+
+export const THEME_NAMES = ['dark', 'light'] as const
+
+export type ThemeName = (typeof THEME_NAMES)[number]
+
+export const isThemeName = (value: unknown): value is ThemeName =>
+  (THEME_NAMES as readonly string[]).includes(value as string)
+
+/**
+ * What Electron paints the window with before the renderer has drawn anything.
+ *
+ * Must track `--color-canvas` in globals.css for each theme. It is the only
+ * thing on screen between the window opening and React's first paint, so a
+ * stale value here is a flash of the wrong theme on every cold launch — which
+ * is exactly why it lives beside the theme names rather than as a literal in
+ * main/index.ts.
+ */
+export const WINDOW_BACKGROUND: Record<ThemeName, string> = {
+  dark: '#16161b',
+  light: '#e8eaf0'
+}
+
+/**
+ * What the interface remembers between launches.
+ *
+ * Fetched as one object rather than a call per preference: they are all read at
+ * boot, before the first paint, and three round trips there is three chances to
+ * render the wrong thing first.
+ */
+export interface UiPrefs {
+  theme: ThemeName
+  /**
+   * Whether scene cards show their position on the board.
+   *
+   * On by default. A scene's number is derived from board order and was only
+   * ever visible as the placeholder of an empty title — so the moment the
+   * planner names the scenes it writes, every number on the board disappears.
+   */
+  sceneNumbers: boolean
+}
+
+/* ------------------------------------------------------ character sheets */
+
+export const SHEET_KINDS = ['character', 'location'] as const
+
+export type SheetKind = (typeof SHEET_KINDS)[number]
+
+/**
+ * One member of the cast: who is in the film, described once.
+ *
+ * A style locks how the film is *shot*. A sheet locks who is *in* it — the
+ * other half of shot-to-shot consistency, and the half a prompt cannot carry on
+ * its own, because "the same woman as the last shot" means nothing to a
+ * generator that never saw the last shot. The description is restated in full,
+ * in identical wording, in every prompt whose shot shows this character.
+ *
+ * Board-scoped, unlike a style: a look is a house style worth reusing across
+ * films, a cast belongs to one film.
+ */
+export interface StorySheet {
+  id: string
+  boardId: string
+  kind: SheetKind
+  name: string
+  description: string
+  sortIndex: number
+  createdAt: string
+}
+
+export type NewStorySheet = Pick<StorySheet, 'boardId'> &
+  Partial<Omit<StorySheet, 'id' | 'boardId' | 'createdAt'>>
+
+export type StorySheetPatch = Partial<
+  Pick<StorySheet, 'kind' | 'name' | 'description' | 'sortIndex'>
+>
 
 /* --------------------------------------------------------- video styles */
 

@@ -81,7 +81,7 @@ export function WeeklyPanel({ open, onClose }: WeeklyPanelProps) {
           />
 
           <motion.aside
-            className="glass absolute inset-y-0 right-0 z-[301] flex w-[380px] flex-col border-l border-white/10 shadow-[-24px_0_60px_-20px_rgb(0_0_0/0.7)]"
+            className="glass absolute inset-y-0 right-0 z-[301] flex w-[380px] flex-col border-l border-hairline drawer-shadow"
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
@@ -254,7 +254,7 @@ function TemplateRow({
             className={cn(
               'relative rounded px-1.5 py-0.5 text-[10.5px] transition-colors',
               template.weekday === day
-                ? 'text-canvas'
+                ? 'text-on-accent'
                 : 'text-ink-faint hover:text-ink-dim'
             )}
           >

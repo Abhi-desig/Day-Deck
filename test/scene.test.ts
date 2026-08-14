@@ -47,14 +47,14 @@ describe('scene naming', () => {
 describe('board duration', () => {
   it('adds up what is decided and counts what is not', () => {
     const result = boardDuration([
-      { durationSec: 5 },
+      { durationSec: 6 },
       { durationSec: 10 },
       { durationSec: null },
       { durationSec: null }
     ])
 
-    // Reported as a pair, because "15s" alone would read as the whole board.
-    expect(result).toEqual({ seconds: 15, undecided: 2 })
+    // Reported as a pair, because "16s" alone would read as the whole board.
+    expect(result).toEqual({ seconds: 16, undecided: 2 })
   })
 
   it('is zero and empty for a board with nothing on it', () => {

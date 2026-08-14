@@ -41,7 +41,7 @@ function scene(over: Partial<ScenePlan> = {}): ScenePlan {
     title: 'Cold open',
     description: 'She steps off the train.',
     prompt: 'wide shot, 35mm, teal grade',
-    durationSec: 5,
+    durationSec: 6,
     ...over
   }
 }
@@ -68,7 +68,7 @@ describe('diffing against a board that already has scenes', () => {
         title: 'Cold open',
         description: 'She steps off the train.',
         prompt: 'wide shot, 35mm, teal grade',
-        durationSec: 5
+        durationSec: 6
       })
     ]
 
@@ -86,7 +86,7 @@ describe('diffing against a board that already has scenes', () => {
         title: 'Cold open',
         description: 'She steps off the train.',
         prompt: 'wide shot, 35mm, teal grade',
-        durationSec: 5
+        durationSec: 6
       })
     ]
 
@@ -101,7 +101,7 @@ describe('diffing against a board that already has scenes', () => {
         title: ' Cold open ',
         description: 'She steps off the train.',
         prompt: 'wide shot, 35mm, teal grade\n',
-        durationSec: 5
+        durationSec: 6
       })
     ]
 
@@ -216,7 +216,7 @@ describe('turning the selection into writes', () => {
         title: 'Cold open',
         description: 'She steps off the train.',
         prompt: 'wide shot, 35mm, teal grade',
-        durationSec: 5
+        durationSec: 6
       })
     ]
     const changes = diffScenePlan(existing, [scene()])

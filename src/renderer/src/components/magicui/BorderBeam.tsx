@@ -35,10 +35,10 @@ interface BorderBeamProps {
 const SWEEP = `conic-gradient(
   from 0deg,
   transparent 0deg 200deg,
-  rgb(255 176 32 / 0.18) 268deg,
-  rgb(255 201 95 / 0.62) 322deg,
-  #ffe9b8 348deg,
-  #fffaf0 355deg,
+  var(--beam-tail) 268deg,
+  var(--beam-body) 322deg,
+  var(--beam-head) 348deg,
+  var(--beam-core) 355deg,
   transparent 360deg
 )`
 
