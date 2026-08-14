@@ -154,6 +154,11 @@ const api: DeckApi = {
     disconnectBrief: (boardId, itemId) =>
       ipcRenderer.invoke(IPC.briefRefsDelete, boardId, itemId),
 
+    sheets: (boardId) => ipcRenderer.invoke(IPC.sheetsList, boardId),
+    createSheet: (input) => ipcRenderer.invoke(IPC.sheetsCreate, input),
+    updateSheet: (id, patch) => ipcRenderer.invoke(IPC.sheetsUpdate, id, patch),
+    deleteSheet: (id) => ipcRenderer.invoke(IPC.sheetsDelete, id),
+
     pickMedia: () => ipcRenderer.invoke(IPC.mediaPick),
 
     planScenes: (boardId) => ipcRenderer.invoke(IPC.boardsPlanScenes, boardId),
@@ -188,7 +193,11 @@ const api: DeckApi = {
     testKey: (key, slot) => ipcRenderer.invoke(IPC.settingsTestKey, key, slot),
     models: () => ipcRenderer.invoke(IPC.geminiModels),
     rate: () => ipcRenderer.invoke(IPC.settingsGetRate),
-    setRate: (perMinute) => ipcRenderer.invoke(IPC.settingsSetRate, perMinute)
+    setRate: (perMinute) => ipcRenderer.invoke(IPC.settingsSetRate, perMinute),
+    prefs: () => ipcRenderer.invoke(IPC.settingsGetPrefs),
+    setTheme: (theme) => ipcRenderer.invoke(IPC.settingsSetTheme, theme),
+    setSceneNumbers: (on) =>
+      ipcRenderer.invoke(IPC.settingsSetSceneNumbers, on)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC.projectsList),

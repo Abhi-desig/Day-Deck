@@ -5,6 +5,7 @@ import { cn } from '../../../lib/cn'
 import { copyText } from '../../../lib/clipboard'
 import { goalStyle } from '../../../lib/goalColor'
 import { isAutoNamed, sceneLabel } from '../../../lib/scene'
+import { usePrefs } from '../../../store/usePrefs'
 import { useStoryboards } from '../../../store/useStoryboards'
 import { Field } from '../Field'
 import { RefThumb } from './RefThumb'
@@ -27,6 +28,7 @@ export function SceneNode({ id, data, selected }: NodeProps<SceneNodeType>) {
   const patchFrame = useStoryboards((s) => s.patchFrame)
   const removeFrame = useStoryboards((s) => s.removeFrame)
   const placeFrame = useStoryboards((s) => s.placeFrame)
+  const sceneNumbers = usePrefs((s) => s.sceneNumbers)
 
   const style = goalStyle(frame.color)
   const label = sceneLabel(frame, index)
@@ -73,7 +75,24 @@ export function SceneNode({ id, data, selected }: NodeProps<SceneNodeType>) {
         )}
       >
         <header className="flex shrink-0 items-center gap-2 border-b border-line-soft/70 px-2.5 py-1.5">
-          <span className={cn('size-1.5 shrink-0 rounded-full', style.dot)} />
+          {sceneNumbers ? (
+            <span
+              // The number is the card's position on the board, and until now it
+              // was only ever visible as the placeholder of an empty title — so
+              // naming a scene, or letting the planner name it, erased it. This
+              // renders regardless of the title, which is the whole point.
+              title={`Scene ${index + 1}`}
+              className={cn(
+                'grid size-[18px] shrink-0 place-items-center rounded-md border text-[10px] tabular-nums',
+                style.border,
+                style.text
+              )}
+            >
+              {index + 1}
+            </span>
+          ) : (
+            <span className={cn('size-1.5 shrink-0 rounded-full', style.dot)} />
+          )}
           <Field
             value={frame.title}
             placeholder={label}
@@ -201,7 +220,7 @@ function PromptBlock({ frame, nodeId }: { frame: StoryFrame; nodeId: string }) {
 
   return (
     <div
-      className="shrink-0 rounded-lg border border-line-soft bg-black/20 p-1.5"
+      className="shrink-0 rounded-lg border border-line-soft bg-well p-1.5"
       data-prompt-for={nodeId}
     >
       <div className="flex items-center justify-between gap-2 px-0.5 pb-1">

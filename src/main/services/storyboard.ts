@@ -14,6 +14,7 @@ import {
   planPrompts as askForPrompts,
   planScenes as askForScenes,
   sortStyleText,
+  type SheetLine,
   type StyleSortResult
 } from './gemini'
 import { requireApiKey } from './secrets'
@@ -64,6 +65,20 @@ function placedStyle(db: Db, boardId: string) {
 const describeItem = (item: StoryListItem): string =>
   `${item.label}${item.mediaKind ? ` (${item.mediaKind})` : ''}`
 
+/**
+ * The board's cast, flattened for the prompt builders.
+ *
+ * A sheet with no name or no description is dropped rather than sent half-empty:
+ * an unnamed character cannot be referred to, and a named one with nothing said
+ * about them would have the model invent the description — which is the exact
+ * inconsistency the cast exists to prevent.
+ */
+const castOf = (db: Db, boardId: string): SheetLine[] =>
+  boards
+    .listSheets(db, boardId)
+    .filter((s) => s.name.trim() && s.description.trim())
+    .map((s) => ({ name: s.name, description: s.description }))
+
 export async function propose(
   db: Db,
   boardId: string
@@ -100,7 +115,8 @@ export async function propose(
       .filter((i) => i.label.trim())
       .map(
         (i) => `${describeItem(i)}${briefWired.has(i.id) ? ' [film-wide]' : ''}`
-      )
+      ),
+    characters: castOf(db, boardId)
   })
 
   // The breakdown never proposes prompt changes: a scene paired with an
@@ -270,6 +286,7 @@ export async function proposePrompts(
       visualStyle: board.visualStyle,
       style,
       briefReferences,
+      characters: castOf(db, boardId),
       scenes,
       write
     })

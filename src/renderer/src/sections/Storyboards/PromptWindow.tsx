@@ -87,7 +87,7 @@ export function PromptWindow({
             exit={{ opacity: 0, scale: 0.985 }}
             transition={SPRING.snap}
           >
-            <div className="glass pointer-events-auto flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 shadow-[0_40px_80px_-30px_rgb(0_0_0/0.8)]">
+            <div className="glass pointer-events-auto flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-hairline modal-shadow">
               <header className="shrink-0 border-b border-line-soft px-5 py-3.5">
                 <h2 className="text-[14px] tracking-[-0.01em]">
                   {proposal.styleName
@@ -245,8 +245,8 @@ function Block({
         className={cn(
           'mt-0.5 whitespace-pre-wrap rounded-md border p-2 font-mono text-[11px] leading-relaxed',
           tone === 'before'
-            ? 'border-line-soft/50 bg-black/10 text-ink-faint line-through decoration-ink-faint/40'
-            : 'border-line-soft bg-black/20 text-ink-dim'
+            ? 'border-line-soft/50 bg-well-soft text-ink-faint line-through decoration-ink-faint/40'
+            : 'border-line-soft bg-well text-ink-dim'
         )}
       >
         {body || '(empty)'}

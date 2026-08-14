@@ -255,7 +255,7 @@ function Editor({ style, onDone }: { style: VideoStyle; onDone(): void }) {
           value={style.sourceText}
           placeholder="e.g. gritty handheld 35mm look, teal and orange grade, hard practical light, 2.39:1…"
           onCommit={(sourceText) => void patch(style.id, { sourceText })}
-          className="max-h-[120px] min-h-[48px] rounded-md border border-line-soft/60 bg-black/15 p-2 text-[11.5px] leading-relaxed text-ink-dim focus:border-line"
+          className="max-h-[120px] min-h-[48px] rounded-md border border-line-soft/60 bg-well p-2 text-[11.5px] leading-relaxed text-ink-dim focus:border-line"
         />
       </label>
 

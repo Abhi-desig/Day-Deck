@@ -77,7 +77,7 @@ export function BriefNode({ data }: NodeProps<BriefNodeType>) {
             value={board.brief}
             placeholder="What is this film, who is it for, what has to land…"
             onCommit={(brief) => void patchBoard(board.id, { brief })}
-            className="nodrag nowheel mt-1 max-h-[160px] min-h-[72px] rounded-md bg-black/20 p-2 text-[12px] leading-relaxed text-ink-dim"
+            className="nodrag nowheel mt-1 max-h-[160px] min-h-[72px] rounded-md bg-well p-2 text-[12px] leading-relaxed text-ink-dim"
           />
         </label>
 
@@ -90,7 +90,7 @@ export function BriefNode({ data }: NodeProps<BriefNodeType>) {
             value={board.visualStyle}
             placeholder="Look, grade, references, the feel of it…"
             onCommit={(visualStyle) => void patchBoard(board.id, { visualStyle })}
-            className="nodrag nowheel mt-1 max-h-[120px] min-h-[48px] rounded-md bg-black/20 p-2 text-[12px] leading-relaxed text-ink-dim"
+            className="nodrag nowheel mt-1 max-h-[120px] min-h-[48px] rounded-md bg-well p-2 text-[12px] leading-relaxed text-ink-dim"
           />
         </label>
 
