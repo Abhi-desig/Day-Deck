@@ -221,6 +221,72 @@ describe('decomposeCurriculum', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  /**
+   * An overloaded model is Google being busy, not Day Deck being broken — and
+   * for the storyboard planner it was the difference between a plan and a red
+   * banner. These pin the wait down: long enough to outlast a shed request,
+   * bounded, and separate from the budget a real server error spends.
+   */
+  describe('an overloaded model', () => {
+    /** The waits are real seconds; the clock is not. */
+    const runWithClock = async <T,>(
+      run: () => Promise<T>,
+      advanceMs = 60_000
+    ): Promise<T> => {
+      vi.useFakeTimers()
+      try {
+        const pending = run()
+        await vi.advanceTimersByTimeAsync(advanceMs)
+        return await pending
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+
+    it('is waited out rather than reported as a failure', async () => {
+      const fetchMock = mockFetch([
+        { status: 503, text: 'The model is overloaded. Please try again later.' },
+        { status: 503, text: 'The model is overloaded. Please try again later.' },
+        { body: reply(TOPICS_JSON) }
+      ])
+
+      await expect(
+        runWithClock(() => decomposeCurriculum(ARGS))
+      ).resolves.toHaveLength(2)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
+
+    it('gives up saying whose limit it was, so Settings is not blamed', async () => {
+      const fetchMock = mockFetch([{ status: 503, text: 'overloaded' }])
+
+      const error = await runWithClock(() =>
+        decomposeCurriculum(ARGS).catch((e: unknown) => e)
+      )
+
+      expect(error).toBeInstanceOf(GeminiError)
+      expect((error as GeminiError).status).toBe(503)
+      // The whole point of the message: the number the user can change is not
+      // the number that refused them.
+      expect((error as GeminiError).message).toMatch(/Settings cannot clear it/i)
+      // One try plus its own retries — not the three a server error gets.
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+    })
+
+    it('does not lend its patience to a genuine server error', async () => {
+      const fetchMock = mockFetch([{ status: 500, text: 'internal' }])
+
+      // Caught inside the run rather than asserted on the outside: the clock is
+      // advanced while the call is in flight, and a rejection nothing is
+      // holding yet is an unhandled rejection.
+      const error = await runWithClock(() =>
+        decomposeCurriculum(ARGS).catch((e: unknown) => e)
+      )
+
+      expect(error).toMatchObject({ kind: 'server', status: 500 })
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
+  })
+
   it('classifies a dead network as offline rather than a generic failure', async () => {
     vi.stubGlobal(
       'fetch',

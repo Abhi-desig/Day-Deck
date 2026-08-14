@@ -62,9 +62,37 @@ interface RequestOptions {
   attempts?: number
 }
 
-/** 1s, 3s — long enough for an overloaded model to come back, short enough
-    that a person is still waiting rather than wondering. */
+/** 1s, 3s — a blip either clears on its own that fast or is not a blip. */
 const backoffMs = (attempt: number): number => 1_000 * 3 ** attempt
+
+/**
+ * How long to ride out an overloaded model, and how many times.
+ *
+ * 503 is the one server status that is not breakage. The request was fine and
+ * the key was fine; Gemini shed it because the model had more work than
+ * capacity at that instant, and the identical request usually lands a little
+ * later. Sharing the generic 5xx schedule meant giving up about four seconds
+ * in, which is nowhere near how long a model stays shed under load — so
+ * Google's busy minute reached the user as a failed plan and read like a limit
+ * they had done something wrong to hit.
+ *
+ * Three retries at 2s, 4s, 8s: roughly fifteen seconds of patience, jittered.
+ * The jitter matters because a board is a run of these calls — retrying in
+ * lockstep is how a queue that was clearing gets hit by the whole batch again.
+ * Past that, saying so is worth more than a fourth wait the user cannot see.
+ */
+const OVERLOAD_RETRIES = 3
+const overloadWaitMs = (retry: number): number =>
+  Math.round(2_000 * 2 ** retry * (0.75 + Math.random() * 0.5))
+
+/**
+ * Said in full because this is the message that has already cost the user an
+ * afternoon: the number they can change is not the number that refused them.
+ */
+const OVERLOADED =
+  'Gemini is overloaded right now (503) — Google shed the request instead of queueing it. ' +
+  "That is Google's own serving capacity, not a quota and not Day Deck's rate limit, so raising calls per minute in Settings cannot clear it. " +
+  'Day Deck already retried for about 15 seconds. Give it a minute and plan again, or switch the model in Goals Admin — a different model is a different pool.'
 
 /**
  * The longest we will sit on a retry before handing the wait back to the user.
@@ -98,10 +126,18 @@ async function request(
   apiKey: string,
   { method = 'GET', body, timeoutMs = 30_000, attempts = 3 }: RequestOptions = {}
 ): Promise<unknown> {
-  let lastError: GeminiError | null = null
   let waitMs = 0
+  /**
+   * Two counts, because the two waits are not the same kind of wait. `retries`
+   * is the caller's budget, spent on a refused quota or a broken server. An
+   * overloaded model is neither — nothing is wrong and nothing is exhausted —
+   * so it is given its own, longer count rather than eating a budget sized for
+   * failures that do not heal.
+   */
+  let retries = 0
+  let overloads = 0
 
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (;;) {
     if (waitMs > 0) await sleep(waitMs)
 
     let response: Response
@@ -116,9 +152,8 @@ async function request(
         signal: AbortSignal.timeout(timeoutMs)
       })
     } catch (err) {
-      lastError = classifyNetworkError(err)
       // A dead network will not heal inside a backoff; fail fast.
-      throw lastError
+      throw classifyNetworkError(err)
     }
 
     if (response.ok) return response.json()
@@ -141,7 +176,7 @@ async function request(
     }
     if (response.status === 429) {
       const asked = askedToWaitMs(detail)
-      lastError = new GeminiError(
+      const error = new GeminiError(
         asked === null
           ? "Gemini's own quota refused the call — this is Google's limit, not Day Deck's, so raising the rate in Settings will not clear it."
           : `Gemini's own quota is exhausted for about ${Math.ceil(
@@ -152,17 +187,28 @@ async function request(
       )
       // Retrying inside a window Gemini has already priced is spending the
       // quota that refused us.
-      if (asked !== null && asked > MAX_WAIT_MS) throw lastError
-      waitMs = asked ?? backoffMs(attempt)
+      if (asked !== null && asked > MAX_WAIT_MS) throw error
+      if (retries >= attempts - 1) throw error
+      waitMs = asked ?? backoffMs(retries)
+      retries += 1
+      continue
+    }
+    if (response.status === 503) {
+      const error = new GeminiError(OVERLOADED, 'server', 503)
+      if (overloads >= OVERLOAD_RETRIES) throw error
+      waitMs = overloadWaitMs(overloads)
+      overloads += 1
       continue
     }
     if (response.status >= 500) {
-      lastError = new GeminiError(
-        `Gemini had a server error (${response.status}).`,
+      const error = new GeminiError(
+        `Gemini had a server error (${response.status}): ${trimDetail(detail)}`,
         'server',
         response.status
       )
-      waitMs = backoffMs(attempt)
+      if (retries >= attempts - 1) throw error
+      waitMs = backoffMs(retries)
+      retries += 1
       continue
     }
 
@@ -172,11 +218,6 @@ async function request(
       response.status
     )
   }
-
-  throw (
-    lastError ??
-    new GeminiError('Gemini could not be reached after retries.', 'unknown')
-  )
 }
 
 function trimDetail(detail: string): string {
