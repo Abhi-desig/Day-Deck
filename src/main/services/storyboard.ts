@@ -272,6 +272,9 @@ export async function proposePrompts(
 
   const apiKey = requireApiKey('prompts')
   const model = modelFor(db)
+  // Read once, not once per batch — the cast cannot change while the loop runs,
+  // and re-reading it per batch was work that only looked free.
+  const characters = castOf(db, boardId)
   const prompts: PromptPlanProposal['prompts'] = []
 
   for (let start = 0; start < scenes.length; start += PROMPT_BATCH) {
@@ -286,7 +289,7 @@ export async function proposePrompts(
       visualStyle: board.visualStyle,
       style,
       briefReferences,
-      characters: castOf(db, boardId),
+      characters,
       scenes,
       write
     })

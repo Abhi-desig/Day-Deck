@@ -249,6 +249,24 @@ describe('planning scenes', () => {
     expect(scene.properties.duration_sec.enum).toEqual([4, 6, 8, 10])
   })
 
+  /**
+   * A breakdown is a sentence and a number per shot. Asking for a 32k answer
+   * and unbounded reasoning to produce it is what pushed a board's worth of
+   * planning through a tokens-per-minute quota.
+   */
+  it('asks for a breakdown-sized answer, not a runaway one', async () => {
+    const fetchMock = mockFetch([{ body: reply(SCENES_JSON) }])
+    await planScenes(ARGS)
+
+    const { generationConfig } = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string
+    )
+    expect(generationConfig.maxOutputTokens).toBeLessThanOrEqual(8_192)
+    expect(generationConfig.thinkingConfig.thinkingBudget).toBeLessThanOrEqual(
+      1_024
+    )
+  })
+
   it('snaps a duration the model invented anyway', async () => {
     // An enum in the schema is a strong hint, not a guarantee. A 7-second scene
     // is not renderable, and throwing the whole plan away over one number would

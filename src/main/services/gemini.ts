@@ -62,18 +62,47 @@ interface RequestOptions {
   attempts?: number
 }
 
+/** 1s, 3s — long enough for an overloaded model to come back, short enough
+    that a person is still waiting rather than wondering. */
+const backoffMs = (attempt: number): number => 1_000 * 3 ** attempt
+
+/**
+ * The longest we will sit on a retry before handing the wait back to the user.
+ *
+ * A 429 that asks for a minute is not a queue that is about to move — it is a
+ * quota window, usually tokens-per-minute rather than requests-per-minute.
+ * Sleeping through it burns another request from the same quota on the far side
+ * for no better odds, so past this point saying how long is worth more than
+ * trying again.
+ */
+const MAX_WAIT_MS = 15_000
+
+/**
+ * How long Gemini itself asked us to wait.
+ *
+ * A 429 body carries a `RetryInfo` detail with the real window. Ignoring it and
+ * retrying on our own schedule is what turns one refused call into three, each
+ * one spending quota that was already exhausted — which reads to the user as a
+ * limit they cannot raise, because the limit being hit is not the one the app's
+ * own setting controls.
+ */
+function askedToWaitMs(detail: string): number | null {
+  const match = /retry[_-]?delay"?\s*:\s*"?(\d+(?:\.\d+)?)s/i.exec(detail)
+  if (!match) return null
+  const seconds = Number(match[1])
+  return Number.isFinite(seconds) ? Math.ceil(seconds * 1_000) : null
+}
+
 async function request(
   path: string,
   apiKey: string,
   { method = 'GET', body, timeoutMs = 30_000, attempts = 3 }: RequestOptions = {}
 ): Promise<unknown> {
   let lastError: GeminiError | null = null
+  let waitMs = 0
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    if (attempt > 0) {
-      // 0.6s, 1.8s, 5.4s — enough to clear a short rate-limit window.
-      await sleep(600 * 3 ** (attempt - 1))
-    }
+    if (waitMs > 0) await sleep(waitMs)
 
     let response: Response
     try {
@@ -88,7 +117,7 @@ async function request(
       })
     } catch (err) {
       lastError = classifyNetworkError(err)
-      // A dead network will not heal in 600ms; fail fast.
+      // A dead network will not heal inside a backoff; fail fast.
       throw lastError
     }
 
@@ -111,11 +140,20 @@ async function request(
       )
     }
     if (response.status === 429) {
+      const asked = askedToWaitMs(detail)
       lastError = new GeminiError(
-        'Gemini rate limit reached. Waiting before retrying.',
+        asked === null
+          ? "Gemini's own quota refused the call — this is Google's limit, not Day Deck's, so raising the rate in Settings will not clear it."
+          : `Gemini's own quota is exhausted for about ${Math.ceil(
+              asked / 1_000
+            )}s — this is Google's limit, not Day Deck's, so raising the rate in Settings will not clear it.`,
         'rate',
         429
       )
+      // Retrying inside a window Gemini has already priced is spending the
+      // quota that refused us.
+      if (asked !== null && asked > MAX_WAIT_MS) throw lastError
+      waitMs = asked ?? backoffMs(attempt)
       continue
     }
     if (response.status >= 500) {
@@ -124,6 +162,7 @@ async function request(
         'server',
         response.status
       )
+      waitMs = backoffMs(attempt)
       continue
     }
 
@@ -274,7 +313,7 @@ function extractText(payload: unknown, kind: 'json' | 'prose' = 'json'): string 
   if (candidate.finishReason === 'MAX_TOKENS') {
     if (kind === 'json' || !text) {
       throw new GeminiError(
-        'The response was cut off before it finished. Try a shorter curriculum, or a model with a larger output limit.',
+        'The response was cut off before it finished. Ask for less in one go — a shorter curriculum, or fewer scenes on the board.',
         'truncated'
       )
     }
@@ -339,64 +378,98 @@ function parseTopics(text: string): TopicDraft[] {
 }
 
 /**
- * One structured-JSON call, retried on the older `responseSchema` field.
+ * What one structured-JSON call is allowed to spend.
+ *
+ * `thinking` is the number that moves the bill. Left unset, Gemini decides for
+ * itself how long to reason before answering, and those tokens are charged as
+ * output — on prompts this size routinely several times the visible answer.
+ * That is what puts a board's worth of calls through a tokens-per-minute quota
+ * long before it goes near a requests-per-minute one, which is why raising the
+ * calls-per-minute setting does not help a run that keeps being refused.
+ *
+ * Every caller states its own budget, because how much thought a job is worth
+ * is a per-job answer: breaking a brief into shots deserves some, sorting the
+ * user's own words into named boxes deserves none.
+ *
+ * `output` caps thinking and answer together, so it can never be set below the
+ * answer plus its thinking budget.
+ */
+interface JsonBudget {
+  timeoutMs: number
+  output: number
+  thinking: number
+}
+
+/**
+ * A surface that predates a field says so by name, and the name is the only
+ * reliable way to tell which retreat is worth a round trip. Anything else a 400
+ * can mean — a prompt over the input limit, a model id that does not exist — is
+ * the same rejection whatever we send next, so retrying it only spends another
+ * request from the quota to be told the same thing.
+ */
+const REJECTED_THINKING = /thinking/i
+const REJECTED_SCHEMA = /unknown name|json[_-]?schema/i
+
+/**
+ * One structured-JSON call, degrading only on what the API actually rejected.
  *
  * Both schema fields express the same thing; which one an endpoint accepts
  * depends on how new it is, and the only way to find out is to be rejected. The
- * fallback is worth one extra round trip because the alternative is plan
- * generation failing outright on an older surface.
+ * same is true of the thinking budget. Each retreat is taken at most once, so a
+ * call costs at most three round trips and usually one.
  */
 async function generateJson(
   apiKey: string,
   model: string,
   prompt: string,
   schema: unknown,
-  timeoutMs: number
+  budget: JsonBudget
 ): Promise<string> {
-  const base = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.2,
-      maxOutputTokens: 32_768
-    }
-  }
-
   const path = `/models/${encodeURIComponent(model)}:generateContent`
 
-  let payload: unknown
-  try {
-    // The newer full-JSON-Schema field.
-    payload = await request(path, apiKey, {
-      method: 'POST',
-      timeoutMs,
-      body: {
-        ...base,
-        generationConfig: {
-          ...base.generationConfig,
-          responseJsonSchema: schema
-        }
-      }
-    })
-  } catch (err) {
-    // Older API surfaces only accept `responseSchema` (the OpenAPI subset).
-    // Our schemas fit both, so a 400 here is worth one retry on the old field.
-    if (!(err instanceof GeminiError) || err.status !== 400) throw err
+  let thinking = true
+  let newSchemaField = true
 
-    payload = await request(path, apiKey, {
-      method: 'POST',
-      timeoutMs,
-      body: {
-        ...base,
-        generationConfig: {
-          ...base.generationConfig,
-          responseSchema: schema
-        }
+  for (;;) {
+    const body = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        temperature: 0.2,
+        maxOutputTokens: budget.output,
+        ...(thinking
+          ? { thinkingConfig: { thinkingBudget: budget.thinking } }
+          : {}),
+        ...(newSchemaField
+          ? { responseJsonSchema: schema }
+          : { responseSchema: schema })
       }
-    })
+    }
+
+    try {
+      return extractText(
+        await request(path, apiKey, {
+          method: 'POST',
+          timeoutMs: budget.timeoutMs,
+          body
+        })
+      )
+    } catch (err) {
+      if (!(err instanceof GeminiError) || err.status !== 400) throw err
+
+      // Order matters: an unknown-field 400 for thinkingConfig also reads as a
+      // schema rejection, and dropping the budget is the cheaper retreat.
+      if (thinking && REJECTED_THINKING.test(err.message)) {
+        thinking = false
+        continue
+      }
+      if (newSchemaField && REJECTED_SCHEMA.test(err.message)) {
+        newSchemaField = false
+        continue
+      }
+      throw err
+    }
   }
-
-  return extractText(payload)
 }
 
 export async function decomposeCurriculum(opts: {
@@ -408,13 +481,15 @@ export async function decomposeCurriculum(opts: {
   targetTopics: number
 }): Promise<TopicDraft[]> {
   return parseTopics(
-    await generateJson(
-      opts.apiKey,
-      opts.model,
-      buildPrompt(opts),
-      TOPIC_SCHEMA,
-      180_000
-    )
+    await generateJson(opts.apiKey, opts.model, buildPrompt(opts), TOPIC_SCHEMA, {
+      timeoutMs: 180_000,
+      // A whole curriculum's worth of topics; the cap stays where it was
+      // because truncation here fails the entire plan.
+      output: 32_768,
+      // Deciding how a subject breaks up is genuinely a reasoning job, so this
+      // is the most generous budget in the file — bounded, not unlimited.
+      thinking: 4_096
+    })
   )
 }
 
@@ -555,7 +630,7 @@ export async function subdivideTopics(opts: {
       opts.model,
       buildSubdividePrompt(opts),
       POINTS_SCHEMA,
-      120_000
+      { timeoutMs: 120_000, output: 32_768, thinking: 2_048 }
     )
   )
 }
@@ -879,7 +954,14 @@ export async function planScenes(opts: ScenePlanInput): Promise<ScenePlan[]> {
       opts.model,
       buildScenePrompt(opts),
       SCENE_SCHEMA,
-      180_000
+      {
+        timeoutMs: 180_000,
+        // A breakdown is a title, a sentence or two and a number per shot. Even
+        // a forty-shot film is a few thousand tokens; the old 32k ceiling was
+        // room for a runaway rather than room for an answer.
+        output: 8_192,
+        thinking: 1_024
+      }
     )
   )
 }
@@ -1060,7 +1142,15 @@ export async function planPrompts(
       opts.model,
       buildPromptWriterPrompt(opts),
       PROMPT_SCHEMA,
-      180_000
+      {
+        timeoutMs: 180_000,
+        // PROMPT_BATCH prompts, each a paragraph that restates the look and any
+        // cast in it. Generous for fifteen of those, nowhere near 32k.
+        output: 12_288,
+        // Most of this job is restating settled wording in a fixed order, which
+        // is close to transcription — it does not need long deliberation.
+        thinking: 512
+      }
     ),
     opts.write
   )
@@ -1172,7 +1262,10 @@ export async function sortStyleText(opts: {
     opts.model,
     buildStyleSortPrompt(opts.text),
     STYLE_SORT_SCHEMA,
-    30_000
+    // Moving the user's own words into named boxes. The output is a handful of
+    // short fields and there is nothing here to reason about — anything the
+    // model thought up would be thrown away by keepGroundedFields anyway.
+    { timeoutMs: 30_000, output: 2_048, thinking: 0 }
   )
 
   let parsed: unknown
