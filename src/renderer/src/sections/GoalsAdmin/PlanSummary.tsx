@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'motion/react'
 import { labelFor } from '@shared/date'
 import type { CurriculumPlan, Topic } from '@shared/types'
-import { SUBDIVIDE_BATCH } from '@shared/types'
+import { PROVIDER_INFO, SUBDIVIDE_BATCH } from '@shared/types'
 import { useCurriculum } from '../../store/useCurriculum'
 import { cn } from '../../lib/cn'
 import { goalStyle } from '../../lib/goalColor'
@@ -17,6 +17,7 @@ export function PlanSummary({ plan }: { plan: CurriculumPlan }) {
   const subdivide = useCurriculum((s) => s.subdivide)
   const subdividing = useCurriculum((s) => s.subdividing)
   const progress = useCurriculum((s) => s.progress)
+  const provider = useCurriculum((s) => s.goalsProvider)
   const [confirmReplace, setConfirmReplace] = useState(false)
 
   const { curriculum, topics, summary } = plan
@@ -134,7 +135,8 @@ export function PlanSummary({ plan }: { plan: CurriculumPlan }) {
               {/* Named up front — 300 topics is 20 calls, and finding that out
                   afterwards is not the moment to learn it. */}
               <span className="text-ink-faint/70">
-                About {calls} {calls === 1 ? 'call' : 'calls'} to Gemini.
+                About {calls} {calls === 1 ? 'call' : 'calls'} to{' '}
+                {PROVIDER_INFO[provider].label}.
               </span>
             </p>
 

@@ -1,7 +1,26 @@
 import Database from 'better-sqlite3'
+import type { AiProvider, KeySlot } from '../src/shared/types'
 import { MIGRATIONS } from '../src/main/db/migrations'
+import { setSetting, SLOT_SETTING } from '../src/main/db/settings'
 
 export type TestDb = Database.Database
+
+/** Point one slot at a provider, the way Settings would. */
+export function configureSlot(
+  db: TestDb,
+  slot: KeySlot,
+  provider: AiProvider,
+  opts: { model?: string; baseUrl?: string } = {}
+): TestDb {
+  setSetting(db, SLOT_SETTING.provider(slot), provider)
+  if (opts.model !== undefined) {
+    setSetting(db, SLOT_SETTING.model(slot), opts.model)
+  }
+  if (opts.baseUrl !== undefined) {
+    setSetting(db, SLOT_SETTING.baseUrl(slot), opts.baseUrl)
+  }
+  return db
+}
 
 /**
  * A real SQLite database in memory, running the same migrations the app ships.

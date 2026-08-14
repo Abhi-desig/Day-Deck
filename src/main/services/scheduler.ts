@@ -3,7 +3,7 @@ import { addDays, diffDays, weekdayOf } from '@shared/date'
 import type { ScheduleSummary } from '@shared/types'
 
 /**
- * The deliberate division of labour in Day Deck: Gemini decides *what* the
+ * The deliberate division of labour in Day Deck: the model decides *what* the
  * topics are and roughly how long each takes; this file decides *when* they
  * happen. Language models are unreliable at "make this land exactly on the
  * deadline" — arithmetic is not. Keeping the calendar here also makes reflow

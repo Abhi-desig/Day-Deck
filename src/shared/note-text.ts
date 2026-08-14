@@ -9,7 +9,7 @@ import { addDays, isValidKey, weekdayOf } from './date'
  * front of them, not by their order. Getting that from a sentence is the whole
  * job here.
  *
- * This is deliberately local code rather than another Gemini call. Resolving a
+ * This is deliberately local code rather than another model call. Resolving a
  * weekday name against today is arithmetic, it has to work offline, it has to
  * be instant while the user is still typing, and — unlike a model — it is
  * exhaustively testable. The same reasoning that keeps scheduling out of the

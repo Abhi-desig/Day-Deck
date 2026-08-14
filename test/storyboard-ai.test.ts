@@ -1,14 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoStyle } from '../src/shared/types'
 import { OMNI_DURATIONS } from '../src/shared/types'
-import {
-  GeminiError,
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/day-deck-test' },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s),
+    decryptString: (b: Buffer) => b.toString()
+  }
+}))
+
+vi.mock('../src/main/services/secrets', () => ({
+  getApiKey: () => 'test-key',
+  keyStatus: () => ({ present: true, encryptionAvailable: true }),
+  setApiKey: () => {},
+  clearApiKey: () => {}
+}))
+
+const {
   buildPromptWriterPrompt,
   buildScenePrompt,
   planPrompts,
   planScenes,
   renderStyle
-} from '../src/main/services/gemini'
+} = await import('../src/main/services/ai')
+const { AiError } = await import('../src/main/services/providers')
+const { configureSlot, makeDb } = await import('./helpers')
 
 interface FakeResponse {
   status?: number
@@ -57,7 +74,7 @@ function style(over: Partial<VideoStyle> = {}): VideoStyle {
 }
 
 const ARGS = {
-  apiKey: 'test-key',
+  db: configureSlot(makeDb(), 'scenes', 'gemini'),
   model: 'gemini-3.5-flash',
   brief: 'A student arrives in a new city and finds a room.',
   visualStyle: 'warm, documentary',
@@ -332,7 +349,7 @@ describe('planning scenes', () => {
 
   it('reports a parse failure rather than returning nothing', async () => {
     mockFetch([{ body: reply('not json at all') }])
-    await expect(planScenes(ARGS)).rejects.toThrow(GeminiError)
+    await expect(planScenes(ARGS)).rejects.toThrow(AiError)
   })
 
   it('reports JSON with no scenes array as a parse failure', async () => {
@@ -353,7 +370,7 @@ describe('planning scenes', () => {
 })
 
 const PROMPT_ARGS = {
-  apiKey: 'test-key',
+  db: configureSlot(makeDb(), 'prompts', 'gemini'),
   model: 'gemini-3.5-flash',
   brief: 'A student arrives in a new city and finds a room.',
   visualStyle: 'warm, documentary',

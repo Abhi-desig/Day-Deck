@@ -115,7 +115,7 @@ export function CommandPalette() {
         id: 'goal-new',
         label: 'New goal from a curriculum',
         group: 'Goals',
-        keywords: 'plan generate gemini curriculum',
+        keywords: 'plan generate ai model curriculum',
         run: () => {
           request('newGoal', 'goals')
           useCurriculum.getState().startComposing()

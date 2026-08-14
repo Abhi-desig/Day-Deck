@@ -10,7 +10,6 @@ vi.mock('electron', () => ({
 }))
 
 vi.mock('../src/main/services/secrets', () => ({
-  requireApiKey: () => 'test-key',
   getApiKey: () => 'test-key',
   keyStatus: () => ({ present: true, encryptionAvailable: true }),
   setApiKey: () => {},
@@ -21,10 +20,10 @@ const {
   buildStyleSortPrompt,
   keepGroundedFields,
   sortStyleText
-} = await import('../src/main/services/gemini')
+} = await import('../src/main/services/ai')
 const plan = await import('../src/main/services/storyboard')
 const styles = await import('../src/main/db/styles')
-const { makeDb } = await import('./helpers')
+const { configureSlot, makeDb } = await import('./helpers')
 
 /**
  * The sorter's one job is moving the user's words into boxes without adding
@@ -132,7 +131,7 @@ describe('sorting over the wire', () => {
     )
 
     const result = await sortStyleText({
-      apiKey: 'k',
+      db: configureSlot(makeDb(), 'scenes', 'gemini'),
       model: 'gemini-3.5-flash',
       text: TEXT
     })

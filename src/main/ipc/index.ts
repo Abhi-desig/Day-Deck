@@ -22,6 +22,7 @@ import {
   TAG_COLORS,
   WINDOW_BACKGROUND,
   isOmniDuration,
+  isAiProvider,
   isThemeName,
   mediaKindFor
 } from '@shared/types'
@@ -81,14 +82,15 @@ import * as notify from '../services/notify'
 import * as storyboardPlan from '../services/storyboard'
 import * as tracker from '../services/tracker'
 import { checkReminders } from '../services/reminders'
-import { listModels, testConnection } from '../services/gemini'
-import * as rateLimit from '../services/rate-limit'
 import {
-  clearApiKey,
-  keyStatus,
-  requireApiKey,
-  setApiKey
-} from '../services/secrets'
+  listModels,
+  setSlotBaseUrl,
+  setSlotModel,
+  setSlotProvider,
+  slotConfig
+} from '../services/providers'
+import * as rateLimit from '../services/rate-limit'
+import { clearApiKey, keyStatus, setApiKey } from '../services/secrets'
 import { registerWorkspaceIpc } from './workspace'
 
 /**
@@ -843,18 +845,57 @@ export function registerIpc(): void {
     return keyStatus(which)
   })
 
+  /**
+   * Test a key by asking its provider what models it has.
+   *
+   * The same call the model dropdown makes, which is the point: "it works" here
+   * means the exact request the app will make later succeeds, not that the
+   * string looks like a key.
+   */
   ipcMain.handle(IPC.settingsTestKey, async (_e, key: unknown, slot: unknown) => {
-    rateLimit.takeToken(getDb(), 'default')
-    const candidate =
-      typeof key === 'string' && key.trim()
-        ? key.trim()
-        : requireApiKey(assertSlot(slot))
-    return { models: await testConnection(candidate) }
+    const which = assertSlot(slot)
+    rateLimit.takeToken(getDb(), which)
+    const candidate = typeof key === 'string' && key.trim() ? key.trim() : undefined
+    return { models: (await listModels(getDb(), which, candidate)).length }
   })
 
-  ipcMain.handle(IPC.geminiModels, async () => {
-    rateLimit.takeToken(getDb(), 'default')
-    return listModels(requireApiKey())
+  ipcMain.handle(IPC.aiModels, async (_e, slot: unknown, key: unknown) => {
+    const which = assertSlot(slot)
+    rateLimit.takeToken(getDb(), which)
+    return listModels(
+      getDb(),
+      which,
+      typeof key === 'string' && key.trim() ? key.trim() : undefined
+    )
+  })
+
+  ipcMain.handle(IPC.settingsSlotConfigs, () =>
+    KEY_SLOTS.map((slot) => slotConfig(getDb(), slot))
+  )
+
+  ipcMain.handle(
+    IPC.settingsSetProvider,
+    (_e, slot: unknown, provider: unknown) => {
+      // '' is the "follow the default slot" sentinel, not a missing value.
+      if (provider !== '' && !isAiProvider(provider)) {
+        throw new Error(`Unknown provider: ${String(provider)}`)
+      }
+      return setSlotProvider(getDb(), assertSlot(slot), provider)
+    }
+  )
+
+  ipcMain.handle(IPC.settingsSetBaseUrl, (_e, slot: unknown, url: unknown) => {
+    if (typeof url !== 'string') {
+      throw new Error('A base URL has to be a string.')
+    }
+    return setSlotBaseUrl(getDb(), assertSlot(slot), url)
+  })
+
+  ipcMain.handle(IPC.settingsSetModel, (_e, slot: unknown, model: unknown) => {
+    if (typeof model !== 'string') {
+      throw new Error('A model id has to be a string.')
+    }
+    return setSlotModel(getDb(), assertSlot(slot), model)
   })
 
   ipcMain.handle(IPC.settingsGetRate, () => rateLimit.ratePerMinute(getDb()))
@@ -922,7 +963,7 @@ function validateCurriculumInput(input: CurriculumInput): void {
     throw new Error('At least one weekday has to be a study day.')
   }
   if (typeof input.model !== 'string' || !input.model.trim()) {
-    throw new Error('Pick a Gemini model.')
+    throw new Error('Pick a model.')
   }
   if (
     input.color !== undefined &&

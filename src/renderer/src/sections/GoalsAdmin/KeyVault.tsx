@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
+import { PROVIDER_INFO } from '@shared/types'
 import { useCurriculum } from '../../store/useCurriculum'
 import { cn } from '../../lib/cn'
 import { SPRING } from '../../lib/motion'
@@ -15,11 +16,13 @@ export function KeyVault({ onDone }: { onDone?: () => void }) {
   const saveKey = useCurriculum((s) => s.saveKey)
   const clearKey = useCurriculum((s) => s.clearKey)
   const testKey = useCurriculum((s) => s.testKey)
+  const provider = useCurriculum((s) => s.goalsProvider)
 
   const [value, setValue] = useState('')
   const [test, setTest] = useState<TestState>({ kind: 'idle' })
   const [saving, setSaving] = useState(false)
 
+  const { label, keyHint } = PROVIDER_INFO[provider]
   const unavailable = keyStatus?.encryptionAvailable === false
 
   async function runTest() {
@@ -57,11 +60,13 @@ export function KeyVault({ onDone }: { onDone?: () => void }) {
     <div className="rounded-xl border border-line-soft bg-surface/70 p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-[14px] tracking-[-0.01em]">Gemini API key</h2>
+          <h2 className="text-[14px] tracking-[-0.01em]">{label} API key</h2>
           <p className="mt-1 max-w-md text-[12px] leading-relaxed text-ink-faint">
             Encrypted with the macOS keychain and read only by the app&rsquo;s
             background process. There is no way to read it back out — not even
-            from this screen.
+            from this screen. To use a different provider — OpenAI, Grok,
+            Claude, or your own server — change it in Settings; a key from one
+            vendor is always rejected by another.
           </p>
         </div>
 
@@ -90,11 +95,15 @@ export function KeyVault({ onDone }: { onDone?: () => void }) {
           }}
           disabled={unavailable}
           placeholder={
-            keyStatus?.present ? 'Replace the saved key…' : 'Paste your API key'
+            keyStatus?.present
+              ? 'Replace the saved key…'
+              : keyHint
+                ? `Paste your ${label} key (${keyHint})`
+                : `Paste your ${label} key`
           }
           autoComplete="off"
           spellCheck={false}
-          aria-label="Gemini API key"
+          aria-label={`${label} API key`}
           className={cn(
             'min-w-[240px] flex-1 rounded-lg border border-line-soft bg-canvas px-3 py-2',
             'font-mono text-[12.5px] outline-none transition-colors',
@@ -154,7 +163,7 @@ export function KeyVault({ onDone }: { onDone?: () => void }) {
           )}
         >
           {test.kind === 'ok'
-            ? `Connected — ${test.models} models available.`
+            ? `Connected — ${test.models} models available on ${label}.`
             : test.message}
         </motion.p>
       )}

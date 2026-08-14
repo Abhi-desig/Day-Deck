@@ -10,8 +10,8 @@ import type {
 import type { Db } from '../db'
 import * as repo from '../db/curriculum'
 import * as slotsRepo from '../db/slots'
-import { askAgent } from './gemini'
-import { requireApiKey } from './secrets'
+import { askAgent } from './ai'
+import { borrowedModel } from './providers/model'
 
 /**
  * The day-card assistant.
@@ -152,13 +152,14 @@ export function buildDayContext(db: Db, date: DateKey): string {
 }
 
 /**
- * Which model answers.
+ * The goal whose model this day's question should be answered with.
  *
- * Reusing a goal's own configured model rather than adding a setting, because
- * the goal the question is about is the goal whose model the user already
- * chose. Falls back to the most recent goal on a day with no curriculum work.
+ * Null is the "there is no goal at all" signal, and it stays that rather than
+ * becoming a model-resolution failure: the agent has nothing to ground an
+ * answer in without a goal, which is a different problem from not knowing which
+ * model to ask.
  */
-function modelFor(db: Db, facts: DayFacts): string | null {
+function goalModelFor(db: Db, facts: DayFacts): string | null {
   return facts.goals[0]?.model ?? repo.getActive(db)?.model ?? null
 }
 
@@ -177,9 +178,9 @@ export async function ask(
   history: AgentMessage[]
 ): Promise<AgentReply> {
   const facts = readDay(db, date)
-  const model = modelFor(db, facts)
+  const goalModel = goalModelFor(db, facts)
 
-  if (!model) {
+  if (!goalModel) {
     return {
       text: 'There is no goal set up yet, so I have nothing to answer from. Add a goal in Goals Admin and I can explain any day it plans.',
       grounded: false
@@ -187,8 +188,10 @@ export async function ask(
   }
 
   const text = await askAgent({
-    apiKey: requireApiKey('agent'),
-    model,
+    db,
+    // Borrowed from the goal only when the agent slot is that same provider —
+    // a goal's model id means nothing to a different vendor.
+    model: borrowedModel(db, 'agent', goalModel),
     context: renderContext(facts),
     // Trailing turns, and only well-formed ones — the renderer owns this array
     // and a malformed entry should not reach the API as a role it rejects.

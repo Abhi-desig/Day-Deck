@@ -74,7 +74,7 @@ function guardWebContents(contents: Electron.WebContents): void {
  *
  * `style-src 'unsafe-inline'` is required: Motion and React both write inline
  * style attributes. `connect-src 'self'` is what keeps this app offline; the
- * Gemini call in Phase 2 happens in the main process, not here.
+ * AI call in Phase 2 happens in the main process, not here.
  *
  * `deck-media:` in `img-src`/`media-src` is how linked reference media renders.
  * It is narrower than it looks and much narrower than allowing `file:`: the

@@ -1,9 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  GeminiError,
-  decomposeCurriculum,
-  listModels
-} from '../src/main/services/gemini'
+
+/**
+ * The Gemini wire, end to end through a real task.
+ *
+ * Testing through `decomposeCurriculum` rather than the adapter directly is
+ * deliberate: what matters is that a curriculum breakdown still produces the
+ * request Google expects, and that is a property of the whole path — slot
+ * resolution, adapter, retry policy and parser — not of any one piece.
+ */
+
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/day-deck-test' },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s),
+    decryptString: (b: Buffer) => b.toString()
+  }
+}))
+
+vi.mock('../src/main/services/secrets', () => ({
+  getApiKey: () => 'test-key',
+  keyStatus: () => ({ present: true, encryptionAvailable: true }),
+  setApiKey: () => {},
+  clearApiKey: () => {}
+}))
+
+const { decomposeCurriculum } = await import('../src/main/services/ai')
+const { AiError, listModels } = await import('../src/main/services/providers')
+const { configureSlot, makeDb } = await import('./helpers')
 
 interface FakeResponse {
   status?: number
@@ -38,14 +62,15 @@ const TOPICS_JSON = JSON.stringify({
   ]
 })
 
-const ARGS = {
-  apiKey: 'test-key',
+/** A goals slot on Gemini, which is what every install starts as. */
+const args = () => ({
+  db: configureSlot(makeDb(), 'goals', 'gemini'),
   model: 'gemini-3.5-flash',
   title: 'Creative Technologist',
   rawText: 'Shaders. Physical computing.',
   minutesPerDay: 90,
   targetTopics: 60
-}
+})
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -81,7 +106,7 @@ describe('listModels', () => {
       }
     ])
 
-    const models = await listModels('key')
+    const models = await listModels(configureSlot(makeDb(), 'default', 'gemini'), 'default')
 
     expect(models.map((m) => m.id)).toEqual([
       'gemini-2.5-pro',
@@ -93,7 +118,7 @@ describe('listModels', () => {
   it('sends the key as a header, never in the query string', async () => {
     const fetchMock = mockFetch([{ body: { models: [] } }])
 
-    await listModels('secret-key')
+    await listModels(configureSlot(makeDb(), 'default', 'gemini'), 'default', 'secret-key')
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).not.toContain('secret-key')
@@ -107,7 +132,7 @@ describe('decomposeCurriculum', () => {
   it('asks for structured JSON and parses the topics', async () => {
     const fetchMock = mockFetch([{ body: reply(TOPICS_JSON) }])
 
-    const topics = await decomposeCurriculum(ARGS)
+    const topics = await decomposeCurriculum(args())
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toContain('/models/gemini-3.5-flash:generateContent')
@@ -137,7 +162,7 @@ describe('decomposeCurriculum', () => {
   /** The prompt must never invite the model to schedule anything. */
   it('tells the model explicitly not to assign dates', async () => {
     const fetchMock = mockFetch([{ body: reply(TOPICS_JSON) }])
-    await decomposeCurriculum(ARGS)
+    await decomposeCurriculum(args())
 
     const body = JSON.parse(
       (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string
@@ -152,7 +177,7 @@ describe('decomposeCurriculum', () => {
       { body: reply(TOPICS_JSON) }
     ])
 
-    const topics = await decomposeCurriculum(ARGS)
+    const topics = await decomposeCurriculum(args())
 
     expect(topics).toHaveLength(2)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -165,7 +190,7 @@ describe('decomposeCurriculum', () => {
 
   it('survives a stray code fence', async () => {
     mockFetch([{ body: reply('```json\n' + TOPICS_JSON + '\n```') }])
-    await expect(decomposeCurriculum(ARGS)).resolves.toHaveLength(2)
+    await expect(decomposeCurriculum(args())).resolves.toHaveLength(2)
   })
 
   it('clamps wild estimates and renumbers seq', async () => {
@@ -184,7 +209,7 @@ describe('decomposeCurriculum', () => {
       }
     ])
 
-    const topics = await decomposeCurriculum(ARGS)
+    const topics = await decomposeCurriculum(args())
 
     expect(topics.map((t) => t.seq)).toEqual([1, 2, 3])
     expect(topics[0].estMinutes).toBe(600)
@@ -195,7 +220,7 @@ describe('decomposeCurriculum', () => {
   it('reports a cut-off response instead of returning half a plan', async () => {
     mockFetch([{ body: reply('{"topics":[{"seq":1,', 'MAX_TOKENS') }])
 
-    await expect(decomposeCurriculum(ARGS)).rejects.toMatchObject({
+    await expect(decomposeCurriculum(args())).rejects.toMatchObject({
       kind: 'truncated'
     })
   })
@@ -205,7 +230,7 @@ describe('decomposeCurriculum', () => {
       { status: 401, text: JSON.stringify({ error: { message: 'API key not valid' } }) }
     ])
 
-    await expect(decomposeCurriculum(ARGS)).rejects.toMatchObject({
+    await expect(decomposeCurriculum(args())).rejects.toMatchObject({
       kind: 'auth'
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -217,7 +242,7 @@ describe('decomposeCurriculum', () => {
       { body: reply(TOPICS_JSON) }
     ])
 
-    await expect(decomposeCurriculum(ARGS)).resolves.toHaveLength(2)
+    await expect(decomposeCurriculum(args())).resolves.toHaveLength(2)
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
@@ -251,7 +276,7 @@ describe('decomposeCurriculum', () => {
       ])
 
       await expect(
-        runWithClock(() => decomposeCurriculum(ARGS))
+        runWithClock(() => decomposeCurriculum(args()))
       ).resolves.toHaveLength(2)
       expect(fetchMock).toHaveBeenCalledTimes(3)
     })
@@ -260,14 +285,14 @@ describe('decomposeCurriculum', () => {
       const fetchMock = mockFetch([{ status: 503, text: 'overloaded' }])
 
       const error = await runWithClock(() =>
-        decomposeCurriculum(ARGS).catch((e: unknown) => e)
+        decomposeCurriculum(args()).catch((e: unknown) => e)
       )
 
-      expect(error).toBeInstanceOf(GeminiError)
-      expect((error as GeminiError).status).toBe(503)
+      expect(error).toBeInstanceOf(AiError)
+      expect((error as AiError).status).toBe(503)
       // The whole point of the message: the number the user can change is not
       // the number that refused them.
-      expect((error as GeminiError).message).toMatch(/Settings cannot clear it/i)
+      expect((error as AiError).message).toMatch(/Settings cannot clear it/i)
       // One try plus its own retries — not the three a server error gets.
       expect(fetchMock).toHaveBeenCalledTimes(4)
     })
@@ -279,7 +304,7 @@ describe('decomposeCurriculum', () => {
       // advanced while the call is in flight, and a rejection nothing is
       // holding yet is an unhandled rejection.
       const error = await runWithClock(() =>
-        decomposeCurriculum(ARGS).catch((e: unknown) => e)
+        decomposeCurriculum(args()).catch((e: unknown) => e)
       )
 
       expect(error).toMatchObject({ kind: 'server', status: 500 })
@@ -295,15 +320,15 @@ describe('decomposeCurriculum', () => {
       })
     )
 
-    const error = await decomposeCurriculum(ARGS).catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(GeminiError)
-    expect((error as GeminiError).kind).toBe('offline')
-    expect((error as GeminiError).message).toMatch(/works offline/i)
+    const error = await decomposeCurriculum(args()).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(AiError)
+    expect((error as AiError).kind).toBe('offline')
+    expect((error as AiError).message).toMatch(/works offline/i)
   })
 
   it('rejects a response with no usable topics', async () => {
     mockFetch([{ body: reply(JSON.stringify({ topics: [] })) }])
-    await expect(decomposeCurriculum(ARGS)).rejects.toMatchObject({
+    await expect(decomposeCurriculum(args())).rejects.toMatchObject({
       kind: 'parse'
     })
   })
@@ -323,7 +348,7 @@ describe('the token budget', () => {
 
   it('caps how long the model may reason before answering', async () => {
     const fetchMock = mockFetch([{ body: reply(TOPICS_JSON) }])
-    await decomposeCurriculum(ARGS)
+    await decomposeCurriculum(args())
 
     const config = configOf(fetchMock)
     expect(config.thinkingConfig.thinkingBudget).toBeGreaterThan(0)
@@ -344,7 +369,7 @@ describe('the token budget', () => {
       { body: reply(TOPICS_JSON) }
     ])
 
-    await expect(decomposeCurriculum(ARGS)).resolves.toHaveLength(2)
+    await expect(decomposeCurriculum(args())).resolves.toHaveLength(2)
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
     const retry = configOf(fetchMock, 1)
@@ -364,7 +389,7 @@ describe('the token budget', () => {
       }
     ])
 
-    await expect(decomposeCurriculum(ARGS)).rejects.toThrow(/input token count/i)
+    await expect(decomposeCurriculum(args())).rejects.toThrow(/input token count/i)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
@@ -386,19 +411,19 @@ describe('a rate limit Gemini has already priced', () => {
   it('stops rather than retrying into a window it cannot clear', async () => {
     const fetchMock = mockFetch([refusal('47s')])
 
-    const error = await decomposeCurriculum(ARGS).catch((e: unknown) => e)
-    expect((error as GeminiError).kind).toBe('rate')
+    const error = await decomposeCurriculum(args()).catch((e: unknown) => e)
+    expect((error as AiError).kind).toBe('rate')
     // Says whose limit it is — the app's own calls-per-minute setting cannot
     // move this one, and a user who does not know that will keep raising it.
-    expect((error as GeminiError).message).toMatch(/47s/)
-    expect((error as GeminiError).message).toMatch(/Google's limit/i)
+    expect((error as AiError).message).toMatch(/47s/)
+    expect((error as AiError).message).toMatch(/Google Gemini's limit/i)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('waits out a short window and succeeds', async () => {
     const fetchMock = mockFetch([refusal('1s'), { body: reply(TOPICS_JSON) }])
 
-    await expect(decomposeCurriculum(ARGS)).resolves.toHaveLength(2)
+    await expect(decomposeCurriculum(args())).resolves.toHaveLength(2)
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
