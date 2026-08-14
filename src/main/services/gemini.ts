@@ -667,6 +667,32 @@ export interface ScenePlanInput {
   existing: { title: string; description: string; hasPrompt: boolean }[]
   /** References wired to the board, named so prompts can call for them. */
   references: string[]
+  /** The cast, so the breakdown can refer to people by name. */
+  characters: SheetLine[]
+}
+
+/** One member of the cast, flattened to what a prompt needs to know. */
+export interface SheetLine {
+  name: string
+  description: string
+}
+
+/**
+ * The cast, as a prompt block.
+ *
+ * Returns an empty array when there is no cast, so the caller can spread it
+ * unconditionally and a board with no characters produces no empty heading.
+ */
+function renderCast(characters: readonly SheetLine[], rule: string): string[] {
+  const named = characters.filter((c) => c.name.trim() && c.description.trim())
+  if (named.length === 0) return []
+
+  return [
+    '',
+    'CAST — the people in this film:',
+    ...named.map((c) => `- ${c.name.trim()}: ${c.description.trim()}`),
+    rule
+  ]
 }
 
 /**
@@ -699,6 +725,28 @@ export function renderStyle(style: VideoStyle): string {
 }
 
 /**
+ * What each supported length is *for*.
+ *
+ * Keyed by the duration rather than by position. The sentence this replaced
+ * described only the first and last entries, so every length added between them
+ * would have been listed as legal and then left with no guidance at all —
+ * exactly what happened when 4 and 8 arrived. A length with no entry here still
+ * gets its line, so the two can never silently disagree.
+ */
+const DURATION_INTENT: Record<number, string> = {
+  4: 'a single beat — a look, a cut-in, a reveal, one gesture',
+  6: 'one complete small action, or a held moment with movement in it',
+  8: 'an action carried by a camera move, or two beats that belong in one shot',
+  10: 'a developing action, a long move, or a shot that has to breathe'
+}
+
+const renderDurationIntents = (): string[] =>
+  OMNI_DURATIONS.map(
+    (seconds) =>
+      `  - ${seconds}s: ${DURATION_INTENT[seconds] ?? 'whatever the shot needs'}`
+  )
+
+/**
  * Turn a brief into scenes — the breakdown only.
  *
  * Prompts are not asked for here. The user approves the scene list first, then
@@ -727,6 +775,13 @@ function buildScenePrompt(opts: ScenePlanInput): string {
     )
   }
 
+  parts.push(
+    ...renderCast(
+      opts.characters,
+      'Refer to these people by name in a description. Do not re-describe how they look — that is settled here, once.'
+    )
+  )
+
   if (opts.references.length > 0) {
     parts.push(
       '',
@@ -752,7 +807,8 @@ function buildScenePrompt(opts: ScenePlanInput): string {
     '',
     'RULES:',
     `- duration_sec must be exactly one of: ${OMNI_DURATIONS.join(', ')}. Nothing else is renderable.`,
-    `- Choose per scene by what the shot needs: ${OMNI_DURATIONS[0]}s for a single beat, a look, a cut-in, a reveal; ${OMNI_DURATIONS[OMNI_DURATIONS.length - 1]}s for a developing action, a move, or a shot that has to breathe.`,
+    '- Choose per scene by what the shot needs:',
+    ...renderDurationIntents(),
     '- A scene is one continuous shot. No cuts inside a scene.',
     '- title is a short shot name, 2-5 words, no numbering.',
     '- description says what happens in this scene: subject, action, camera move if any. One or two sentences, written for the person reading the board.',
@@ -865,6 +921,8 @@ export interface PromptPlanInput {
   style: VideoStyle | null
   /** References wired to the brief — they inform every shot. */
   briefReferences: string[]
+  /** The cast. Restated in full in every prompt whose shot shows them. */
+  characters: SheetLine[]
   /** Every scene on the board, in cutting order. All of them, every call —
       the whole board is the context that keeps shot 12 consistent with shot 2. */
   scenes: {
@@ -908,6 +966,13 @@ function buildPromptWriterPrompt(opts: PromptPlanInput): string {
     )
   }
 
+  parts.push(
+    ...renderCast(
+      opts.characters,
+      'When a shot shows one of these people, restate their description in full, in this exact wording, inside that prompt. Never "the same woman", never "as established" — the generator writing shot 9 has never seen shot 2.'
+    )
+  )
+
   if (opts.briefReferences.length > 0) {
     parts.push(
       '',
@@ -934,8 +999,10 @@ function buildPromptWriterPrompt(opts: PromptPlanInput): string {
     '',
     'RULES:',
     '- Every prompt must stand alone. Describe the look in the prompt itself; never write "as established", "same style", or "continuing from the previous shot".',
-    '- A prompt describes one continuous shot: subject, action, camera, lens, light, grade. No cuts inside a scene.',
+    '- State it in this order, every time: subject, action, camera, lens, lighting, grade, film stock, aspect. A generator reads the front of a prompt hardest, so what is in the shot goes first and how it was finished goes last.',
+    '- A prompt describes one continuous shot. No cuts inside a scene.',
     '- Keep the look wording identical across prompts. Consistency across shots is the whole job.',
+    '- Match the amount of action to the length in brackets. A 4s shot is one beat and its prompt should describe one thing happening; a 10s shot can carry a developing action or a camera move. A prompt with three actions in it will not fit a short scene.',
     "- Use a scene's wired references by name only when the shot genuinely uses them; film-wide references apply to every shot.",
     '- Return each prompt with its scene number.'
   )
