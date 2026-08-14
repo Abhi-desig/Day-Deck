@@ -9,6 +9,7 @@ import type {
   StoryFrame
 } from '@shared/types'
 import { cn } from '../../lib/cn'
+import { errorMessage } from '../../lib/error'
 import { goalStyle } from '../../lib/goalColor'
 import { EASE_OUT, SPRING } from '../../lib/motion'
 import { api } from '../../lib/api'
@@ -120,7 +121,7 @@ export function Storyboards() {
     try {
       setProposal(await api.storyboards.planScenes(activeId))
     } catch (err) {
-      setPlanError(err instanceof Error ? err.message : String(err))
+      setPlanError(errorMessage(err))
     } finally {
       setPlanning(false)
     }
@@ -141,7 +142,7 @@ export function Storyboards() {
       // deletions has nothing to write prompts for.
       setOfferPrompts(applies.some((a) => a.kind !== 'delete'))
     } catch (err) {
-      setPlanError(err instanceof Error ? err.message : String(err))
+      setPlanError(errorMessage(err))
     } finally {
       setApplying(false)
     }
@@ -156,7 +157,7 @@ export function Storyboards() {
     try {
       setPromptProposal(await api.storyboards.planPrompts(activeId))
     } catch (err) {
-      setPlanError(err instanceof Error ? err.message : String(err))
+      setPlanError(errorMessage(err))
     } finally {
       setPlanningPrompts(false)
     }
@@ -170,7 +171,7 @@ export function Storyboards() {
       await open(activeId)
       setPromptProposal(null)
     } catch (err) {
-      setPlanError(err instanceof Error ? err.message : String(err))
+      setPlanError(errorMessage(err))
     } finally {
       setApplyingPrompts(false)
     }

@@ -11,7 +11,6 @@ vi.mock('electron', () => ({
 }))
 
 vi.mock('../src/main/services/secrets', () => ({
-  requireApiKey: () => 'test-key',
   getApiKey: () => 'test-key',
   keyStatus: () => ({ present: true, encryptionAvailable: true }),
   setApiKey: () => {},

@@ -1,192 +1,29 @@
 import type {
   AgentMessage,
-  GeminiModel,
+  KeySlot,
   ScenePlan,
   TopicDraft,
   VideoStyle
 } from '@shared/types'
 import { OMNI_DURATIONS, snapDuration } from '@shared/types'
+import type { Db } from '../db'
+import { AiError, generateJson, generateText } from './providers'
 
 /**
- * The only outbound network call Day Deck ever makes, and it lives in the main
- * process so the API key never has to exist in the renderer.
+ * What Day Deck asks a model for, in Day Deck's own terms.
  *
- * Gemini is asked for one thing: an ordered list of topics with effort
- * estimates. It is explicitly *not* asked for dates — see services/scheduler.ts
- * for why.
+ * Everything here is provider-independent: the prompts, the schemas, the
+ * parsing, and the budget each job is worth. Which vendor actually receives it
+ * — and what shape the request has to take on the wire — is
+ * services/providers/, and the split is what lets the same curriculum
+ * breakdown run against Gemini, Grok, GPT or a local server without any of the
+ * prompts below knowing that happened.
+ *
+ * Each function knows which key slot it belongs to, because that is a fixed
+ * property of the feature rather than something a caller should have to
+ * remember: goals plan against the goals slot, the day card asks on the agent
+ * slot, and so on.
  */
-const BASE = 'https://generativelanguage.googleapis.com/v1beta'
-
-export type GeminiErrorKind =
-  | 'offline'
-  | 'auth'
-  | 'rate'
-  | 'server'
-  | 'truncated'
-  | 'parse'
-  | 'unknown'
-
-export class GeminiError extends Error {
-  constructor(
-    message: string,
-    readonly kind: GeminiErrorKind,
-    readonly status?: number
-  ) {
-    super(message)
-    this.name = 'GeminiError'
-  }
-}
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
-
-function classifyNetworkError(err: unknown): GeminiError {
-  const message = err instanceof Error ? err.message : String(err)
-  if (/abort|timeout/i.test(message)) {
-    return new GeminiError(
-      'Gemini took too long to respond. Check your connection and try again.',
-      'offline'
-    )
-  }
-  return new GeminiError(
-    'Could not reach Gemini. Day Deck works offline — everything except plan generation still functions.',
-    'offline'
-  )
-}
-
-interface RequestOptions {
-  method?: string
-  body?: unknown
-  timeoutMs?: number
-  /** Retries only apply to transient failures (429 and 5xx). */
-  attempts?: number
-}
-
-async function request(
-  path: string,
-  apiKey: string,
-  { method = 'GET', body, timeoutMs = 30_000, attempts = 3 }: RequestOptions = {}
-): Promise<unknown> {
-  let lastError: GeminiError | null = null
-
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if (attempt > 0) {
-      // 0.6s, 1.8s, 5.4s — enough to clear a short rate-limit window.
-      await sleep(600 * 3 ** (attempt - 1))
-    }
-
-    let response: Response
-    try {
-      response = await fetch(`${BASE}${path}`, {
-        method,
-        headers: {
-          'x-goog-api-key': apiKey,
-          ...(body ? { 'content-type': 'application/json' } : {})
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(timeoutMs)
-      })
-    } catch (err) {
-      lastError = classifyNetworkError(err)
-      // A dead network will not heal in 600ms; fail fast.
-      throw lastError
-    }
-
-    if (response.ok) return response.json()
-
-    const detail = await response.text().catch(() => '')
-
-    if (response.status === 401 || response.status === 403) {
-      throw new GeminiError(
-        'Gemini rejected the API key. Check it in Goals Admin.',
-        'auth',
-        response.status
-      )
-    }
-    if (response.status === 400) {
-      throw new GeminiError(
-        `Gemini rejected the request: ${trimDetail(detail)}`,
-        'unknown',
-        400
-      )
-    }
-    if (response.status === 429) {
-      lastError = new GeminiError(
-        'Gemini rate limit reached. Waiting before retrying.',
-        'rate',
-        429
-      )
-      continue
-    }
-    if (response.status >= 500) {
-      lastError = new GeminiError(
-        `Gemini had a server error (${response.status}).`,
-        'server',
-        response.status
-      )
-      continue
-    }
-
-    throw new GeminiError(
-      `Gemini returned ${response.status}: ${trimDetail(detail)}`,
-      'unknown',
-      response.status
-    )
-  }
-
-  throw (
-    lastError ??
-    new GeminiError('Gemini could not be reached after retries.', 'unknown')
-  )
-}
-
-function trimDetail(detail: string): string {
-  try {
-    const parsed = JSON.parse(detail) as { error?: { message?: string } }
-    if (parsed.error?.message) return parsed.error.message
-  } catch {
-    /* fall through to the raw text */
-  }
-  return detail.slice(0, 300) || 'no detail provided'
-}
-
-/* ----------------------------------------------------------------- models */
-
-interface RawModel {
-  name: string
-  displayName?: string
-  inputTokenLimit?: number
-  supportedGenerationMethods?: string[]
-}
-
-/** Models that exist but cannot do what Goals Admin needs. */
-const NON_TEXT = /embedding|aqa|imagen|veo|tts|computer-use|live|image/i
-
-/**
- * Read the model list at runtime rather than hardcoding it — Google deprecates
- * and adds models continuously, and a stale constant would silently break plan
- * generation months from now.
- */
-export async function listModels(apiKey: string): Promise<GeminiModel[]> {
-  const data = (await request('/models?pageSize=200', apiKey, {
-    timeoutMs: 20_000
-  })) as { models?: RawModel[] }
-
-  return (data.models ?? [])
-    .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
-    .map((m) => ({
-      id: m.name.replace(/^models\//, ''),
-      displayName: m.displayName ?? m.name.replace(/^models\//, ''),
-      inputTokenLimit: m.inputTokenLimit ?? null
-    }))
-    .filter((m) => !NON_TEXT.test(m.id))
-    .sort((a, b) => a.id.localeCompare(b.id))
-}
-
-export async function testConnection(apiKey: string): Promise<number> {
-  const models = await listModels(apiKey)
-  return models.length
-}
 
 /* ------------------------------------------------------------ decompose */
 
@@ -239,53 +76,9 @@ Rules:
 }
 
 /**
- * `kind` decides what a cut-off response means. Half a JSON document is
- * unusable and has to fail loudly; half an answer is still an answer, so the
- * agent keeps what arrived rather than throwing away a useful reply over its
- * last sentence.
+ * Structured output should be clean JSON, but a stray code fence is cheap to
+ * survive.
  */
-function extractText(payload: unknown, kind: 'json' | 'prose' = 'json'): string {
-  const data = payload as {
-    candidates?: Array<{
-      content?: { parts?: Array<{ text?: string }> }
-      finishReason?: string
-    }>
-    promptFeedback?: { blockReason?: string }
-  }
-
-  const blocked = data.promptFeedback?.blockReason
-  if (blocked) {
-    throw new GeminiError(
-      `Gemini declined to answer this (${blocked}).`,
-      'unknown'
-    )
-  }
-
-  const candidate = data.candidates?.[0]
-  if (!candidate) {
-    throw new GeminiError('Gemini returned no candidates.', 'parse')
-  }
-
-  const text = (candidate.content?.parts ?? [])
-    .map((p) => p.text ?? '')
-    .join('')
-    .trim()
-
-  if (candidate.finishReason === 'MAX_TOKENS') {
-    if (kind === 'json' || !text) {
-      throw new GeminiError(
-        'The response was cut off before it finished. Try a shorter curriculum, or a model with a larger output limit.',
-        'truncated'
-      )
-    }
-    return `${text}…`
-  }
-
-  if (!text) throw new GeminiError('Gemini returned an empty response.', 'parse')
-  return text
-}
-
-/** Structured output should be clean JSON, but a stray code fence is cheap to survive. */
 function parseTopics(text: string): TopicDraft[] {
   const cleaned = text
     .replace(/^\s*```(?:json)?\s*/i, '')
@@ -296,16 +89,16 @@ function parseTopics(text: string): TopicDraft[] {
   try {
     parsed = JSON.parse(cleaned)
   } catch {
-    throw new GeminiError(
-      'Gemini returned something that was not valid JSON.',
+    throw new AiError(
+      'The model returned something that was not valid JSON.',
       'parse'
     )
   }
 
   const raw = (parsed as { topics?: unknown }).topics
   if (!Array.isArray(raw)) {
-    throw new GeminiError(
-      'Gemini returned JSON without a "topics" array.',
+    throw new AiError(
+      'The model returned JSON without a "topics" array.',
       'parse'
     )
   }
@@ -328,8 +121,8 @@ function parseTopics(text: string): TopicDraft[] {
   })
 
   if (topics.length === 0) {
-    throw new GeminiError(
-      'Gemini did not return any usable topics from that curriculum.',
+    throw new AiError(
+      'The model did not return any usable topics from that curriculum.',
       'parse'
     )
   }
@@ -339,68 +132,49 @@ function parseTopics(text: string): TopicDraft[] {
 }
 
 /**
- * One structured-JSON call, retried on the older `responseSchema` field.
+ * What one structured-JSON call is allowed to spend.
  *
- * Both schema fields express the same thing; which one an endpoint accepts
- * depends on how new it is, and the only way to find out is to be rejected. The
- * fallback is worth one extra round trip because the alternative is plan
- * generation failing outright on an older surface.
+ * `thinking` is the number that moves the bill. Left unset, a model decides for
+ * itself how long to reason before answering, and those tokens are charged as
+ * output — on prompts this size routinely several times the visible answer.
+ * That is what puts a board's worth of calls through a tokens-per-minute quota
+ * long before it goes near a requests-per-minute one, which is why raising the
+ * calls-per-minute setting does not help a run that keeps being refused.
+ *
+ * Every caller states its own budget, because how much thought a job is worth
+ * is a per-job answer: breaking a brief into shots deserves some, sorting the
+ * user's own words into named boxes deserves none.
+ *
+ * `output` caps thinking and answer together, so it can never be set below the
+ * answer plus its thinking budget.
  */
-async function generateJson(
-  apiKey: string,
+interface JsonBudget {
+  timeoutMs: number
+  output: number
+  thinking: number
+}
+
+/**
+ * One structured-JSON call, against whichever provider the slot is set to.
+ *
+ * The retreats that used to live here — dropping a thinking field an older
+ * endpoint rejects, swapping one schema field for another — did not go away;
+ * they moved into the adapters, because which fields exist is exactly the part
+ * that differs by vendor. What is left is the part that never did: which slot
+ * pays, what to ask, and what it is worth.
+ */
+const askForJson = (
+  db: Db,
+  slot: KeySlot,
   model: string,
   prompt: string,
   schema: unknown,
-  timeoutMs: number
-): Promise<string> {
-  const base = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.2,
-      maxOutputTokens: 32_768
-    }
-  }
-
-  const path = `/models/${encodeURIComponent(model)}:generateContent`
-
-  let payload: unknown
-  try {
-    // The newer full-JSON-Schema field.
-    payload = await request(path, apiKey, {
-      method: 'POST',
-      timeoutMs,
-      body: {
-        ...base,
-        generationConfig: {
-          ...base.generationConfig,
-          responseJsonSchema: schema
-        }
-      }
-    })
-  } catch (err) {
-    // Older API surfaces only accept `responseSchema` (the OpenAPI subset).
-    // Our schemas fit both, so a 400 here is worth one retry on the old field.
-    if (!(err instanceof GeminiError) || err.status !== 400) throw err
-
-    payload = await request(path, apiKey, {
-      method: 'POST',
-      timeoutMs,
-      body: {
-        ...base,
-        generationConfig: {
-          ...base.generationConfig,
-          responseSchema: schema
-        }
-      }
-    })
-  }
-
-  return extractText(payload)
-}
+  budget: JsonBudget
+): Promise<string> =>
+  generateJson(db, slot, { model, prompt, schema, ...budget })
 
 export async function decomposeCurriculum(opts: {
-  apiKey: string
+  db: Db
   model: string
   title: string
   rawText: string
@@ -408,13 +182,15 @@ export async function decomposeCurriculum(opts: {
   targetTopics: number
 }): Promise<TopicDraft[]> {
   return parseTopics(
-    await generateJson(
-      opts.apiKey,
-      opts.model,
-      buildPrompt(opts),
-      TOPIC_SCHEMA,
-      180_000
-    )
+    await askForJson(opts.db, 'goals', opts.model, buildPrompt(opts), TOPIC_SCHEMA, {
+      timeoutMs: 180_000,
+      // A whole curriculum's worth of topics; the cap stays where it was
+      // because truncation here fails the entire plan.
+      output: 32_768,
+      // Deciding how a subject breaks up is genuinely a reasoning job, so this
+      // is the most generous budget in the file — bounded, not unlimited.
+      thinking: 4_096
+    })
   )
 }
 
@@ -497,16 +273,16 @@ function parseBreakdowns(
   try {
     parsed = JSON.parse(cleaned)
   } catch {
-    throw new GeminiError(
-      'Gemini returned something that was not valid JSON.',
+    throw new AiError(
+      'The model returned something that was not valid JSON.',
       'parse'
     )
   }
 
   const raw = (parsed as { breakdowns?: unknown }).breakdowns
   if (!Array.isArray(raw)) {
-    throw new GeminiError(
-      'Gemini returned JSON without a "breakdowns" array.',
+    throw new AiError(
+      'The model returned JSON without a "breakdowns" array.',
       'parse'
     )
   }
@@ -541,7 +317,7 @@ function parseBreakdowns(
  * be backfilled with exactly the same code path.
  */
 export async function subdivideTopics(opts: {
-  apiKey: string
+  db: Db
   model: string
   goalTitle: string
   curriculumExcerpt: string
@@ -550,12 +326,13 @@ export async function subdivideTopics(opts: {
   if (opts.topics.length === 0) return []
 
   return parseBreakdowns(
-    await generateJson(
-      opts.apiKey,
+    await askForJson(
+      opts.db,
+      'goals',
       opts.model,
       buildSubdividePrompt(opts),
       POINTS_SCHEMA,
-      120_000
+      { timeoutMs: 120_000, output: 32_768, thinking: 2_048 }
     )
   )
 }
@@ -591,38 +368,20 @@ Rules:
  * was actually said.
  */
 export async function askAgent(opts: {
-  apiKey: string
+  db: Db
   model: string
   context: string
   history: AgentMessage[]
   question: string
 }): Promise<string> {
-  const contents = [
-    ...opts.history.map((m) => ({
-      role: m.role,
-      parts: [{ text: m.text }]
-    })),
-    {
-      role: 'user',
-      parts: [{ text: `DAY CONTEXT:\n${opts.context}\n\nQUESTION: ${opts.question}` }]
-    }
-  ]
-
-  const payload = await request(
-    `/models/${encodeURIComponent(opts.model)}:generateContent`,
-    opts.apiKey,
-    {
-      method: 'POST',
-      timeoutMs: 60_000,
-      body: {
-        contents,
-        systemInstruction: { parts: [{ text: AGENT_SYSTEM }] },
-        generationConfig: { temperature: 0.3, maxOutputTokens: 1_024 }
-      }
-    }
-  )
-
-  return extractText(payload, 'prose')
+  return generateText(opts.db, 'agent', {
+    model: opts.model,
+    system: AGENT_SYSTEM,
+    history: opts.history,
+    question: `DAY CONTEXT:\n${opts.context}\n\nQUESTION: ${opts.question}`,
+    timeoutMs: 60_000,
+    output: 1_024
+  })
 }
 
 /* -------------------------------------------------------- storyboards */
@@ -657,7 +416,7 @@ const SCENE_SCHEMA = {
 } as const
 
 export interface ScenePlanInput {
-  apiKey: string
+  db: Db
   model: string
   brief: string
   visualStyle: string
@@ -832,12 +591,12 @@ function parseScenes(raw: string): ScenePlan[] {
   try {
     parsed = JSON.parse(raw)
   } catch {
-    throw new GeminiError('Gemini did not return usable JSON for the scenes.', 'parse')
+    throw new AiError('The model did not return usable JSON for the scenes.', 'parse')
   }
 
   const scenes = (parsed as { scenes?: unknown }).scenes
   if (!Array.isArray(scenes)) {
-    throw new GeminiError('Gemini returned JSON without a "scenes" array.', 'parse')
+    throw new AiError('The model returned JSON without a "scenes" array.', 'parse')
   }
 
   const out: ScenePlan[] = []
@@ -863,8 +622,8 @@ function parseScenes(raw: string): ScenePlan[] {
   }
 
   if (out.length === 0) {
-    throw new GeminiError(
-      'Gemini did not return any usable scenes for that brief.',
+    throw new AiError(
+      'The model did not return any usable scenes for that brief.',
       'parse'
     )
   }
@@ -874,12 +633,20 @@ function parseScenes(raw: string): ScenePlan[] {
 
 export async function planScenes(opts: ScenePlanInput): Promise<ScenePlan[]> {
   return parseScenes(
-    await generateJson(
-      opts.apiKey,
+    await askForJson(
+      opts.db,
+      'scenes',
       opts.model,
       buildScenePrompt(opts),
       SCENE_SCHEMA,
-      180_000
+      {
+        timeoutMs: 180_000,
+        // A breakdown is a title, a sentence or two and a number per shot. Even
+        // a forty-shot film is a few thousand tokens; the old 32k ceiling was
+        // room for a runaway rather than room for an answer.
+        output: 8_192,
+        thinking: 1_024
+      }
     )
   )
 }
@@ -913,7 +680,7 @@ const PROMPT_SCHEMA = {
 } as const
 
 export interface PromptPlanInput {
-  apiKey: string
+  db: Db
   model: string
   brief: string
   visualStyle: string
@@ -1022,12 +789,12 @@ function parsePrompts(raw: string, write: readonly number[]): Map<number, string
   try {
     parsed = JSON.parse(raw)
   } catch {
-    throw new GeminiError('Gemini did not return usable JSON for the prompts.', 'parse')
+    throw new AiError('The model did not return usable JSON for the prompts.', 'parse')
   }
 
   const prompts = (parsed as { prompts?: unknown }).prompts
   if (!Array.isArray(prompts)) {
-    throw new GeminiError('Gemini returned JSON without a "prompts" array.', 'parse')
+    throw new AiError('The model returned JSON without a "prompts" array.', 'parse')
   }
 
   const wanted = new Set(write)
@@ -1042,8 +809,8 @@ function parsePrompts(raw: string, write: readonly number[]): Map<number, string
   }
 
   if (out.size === 0) {
-    throw new GeminiError(
-      'Gemini did not return a prompt for any of those scenes.',
+    throw new AiError(
+      'The model did not return a prompt for any of those scenes.',
       'parse'
     )
   }
@@ -1055,12 +822,21 @@ export async function planPrompts(
   opts: PromptPlanInput
 ): Promise<Map<number, string>> {
   return parsePrompts(
-    await generateJson(
-      opts.apiKey,
+    await askForJson(
+      opts.db,
+      'prompts',
       opts.model,
       buildPromptWriterPrompt(opts),
       PROMPT_SCHEMA,
-      180_000
+      {
+        timeoutMs: 180_000,
+        // PROMPT_BATCH prompts, each a paragraph that restates the look and any
+        // cast in it. Generous for fifteen of those, nowhere near 32k.
+        output: 12_288,
+        // Most of this job is restating settled wording in a fixed order, which
+        // is close to transcription — it does not need long deliberation.
+        thinking: 512
+      }
     ),
     opts.write
   )
@@ -1163,26 +939,30 @@ export function keepGroundedFields(
 }
 
 export async function sortStyleText(opts: {
-  apiKey: string
+  db: Db
   model: string
   text: string
 }): Promise<StyleSortResult> {
-  const raw = await generateJson(
-    opts.apiKey,
+  const raw = await askForJson(
+    opts.db,
+    'scenes',
     opts.model,
     buildStyleSortPrompt(opts.text),
     STYLE_SORT_SCHEMA,
-    30_000
+    // Moving the user's own words into named boxes. The output is a handful of
+    // short fields and there is nothing here to reason about — anything the
+    // model thought up would be thrown away by keepGroundedFields anyway.
+    { timeoutMs: 30_000, output: 2_048, thinking: 0 }
   )
 
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    throw new GeminiError('Gemini did not return usable JSON for the sort.', 'parse')
+    throw new AiError('The model did not return usable JSON for the sort.', 'parse')
   }
   if (!parsed || typeof parsed !== 'object') {
-    throw new GeminiError('Gemini returned something other than fields.', 'parse')
+    throw new AiError('The model returned something other than fields.', 'parse')
   }
 
   return keepGroundedFields(parsed as Record<string, unknown>, opts.text)

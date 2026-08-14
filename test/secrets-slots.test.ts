@@ -4,9 +4,15 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
- * One encrypted file per slot, every slot falling back to `default`, and the
- * legacy single-key file renamed in on first touch. `vi.resetModules` between
- * tests because the migration guard is once-per-process by design.
+ * One encrypted file per slot, and the legacy single-key file renamed in on
+ * first touch. `vi.resetModules` between tests because the migration guard is
+ * once-per-process by design.
+ *
+ * Falling an empty slot back to the default key is deliberately *not* tested
+ * here any more: it stopped being a fact about storage the moment a slot could
+ * be a different vendor from the default, because whether the fallback is even
+ * valid now depends on the two providers agreeing. That lives in
+ * providers.test.ts, next to the provider it has to agree with.
  */
 
 let userData: string
@@ -45,28 +51,25 @@ describe('key slots', () => {
     expect(secrets.getApiKey('scenes')).toBe('scenes-key')
   })
 
-  it('falls back to the default key for an empty slot', async () => {
+  it('reads back nothing for a slot that was never filled', async () => {
     const secrets = await freshSecrets()
-    secrets.setApiKey('the-one-key')
+    secrets.setApiKey('default-key')
 
-    expect(secrets.requireApiKey('agent')).toBe('the-one-key')
-    expect(secrets.requireApiKey('prompts')).toBe('the-one-key')
+    // No fallback here on purpose — this module answers "what is in this slot",
+    // and nothing more. Deciding what an empty slot should do is elsewhere.
+    expect(secrets.getApiKey('agent')).toBe(null)
+    expect(secrets.getApiKey()).toBe('default-key')
   })
 
-  it('prefers a slot key over the default once one is saved', async () => {
+  it('clearing a slot empties that slot and nothing else', async () => {
     const secrets = await freshSecrets()
     secrets.setApiKey('default-key')
     secrets.setApiKey('goals-key', 'goals')
 
-    expect(secrets.requireApiKey('goals')).toBe('goals-key')
-    // Clearing the slot puts it back on the default.
+    expect(secrets.getApiKey('goals')).toBe('goals-key')
     secrets.clearApiKey('goals')
-    expect(secrets.requireApiKey('goals')).toBe('default-key')
-  })
-
-  it('throws with no key anywhere', async () => {
-    const secrets = await freshSecrets()
-    expect(() => secrets.requireApiKey('agent')).toThrow(/no gemini api key/i)
+    expect(secrets.getApiKey('goals')).toBe(null)
+    expect(secrets.getApiKey()).toBe('default-key')
   })
 
   it('refuses a slot name it does not know', async () => {

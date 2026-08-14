@@ -13,18 +13,17 @@ vi.mock('electron', () => ({
 // The breakdown is the only part of the flow that needs a key, and the vault is
 // a file on disk we have no business writing in a unit test.
 vi.mock('../src/main/services/secrets', () => ({
-  requireApiKey: () => 'test-key',
   getApiKey: () => 'test-key',
   keyStatus: () => ({ present: true, encryptionAvailable: true }),
   setApiKey: () => {},
   clearApiKey: () => {}
 }))
 
-const { subdivideTopics } = await import('../src/main/services/gemini')
+const { subdivideTopics } = await import('../src/main/services/ai')
 const { subdivideGoal } = await import('../src/main/services/curriculum')
 const repo = await import('../src/main/db/curriculum')
 const slots = await import('../src/main/db/slots')
-const { makeDb } = await import('./helpers')
+const { configureSlot, makeDb } = await import('./helpers')
 
 interface FakeResponse {
   status?: number
@@ -61,7 +60,7 @@ const breakdowns = (entries: Array<[string, string[]]>): FakeResponse => ({
 })
 
 const ARGS = {
-  apiKey: 'test-key',
+  db: configureSlot(makeDb(), 'goals', 'gemini'),
   model: 'gemini-3.5-flash',
   goalTitle: 'Creative Technologist',
   curriculumExcerpt: 'Shaders. Physical computing.',

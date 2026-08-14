@@ -3,9 +3,9 @@ import type { Db } from '../db'
 import { getNumber, setSetting, SETTING } from '../db/settings'
 
 /**
- * A token bucket per feature slot, in front of every Gemini call.
+ * A token bucket per feature slot, in front of every AI call.
  *
- * The retry/backoff in gemini.ts is *reactive* — it answers a 429 that already
+ * The retry/backoff in services/providers is *reactive* — it answers a 429 that already
  * happened. This is the proactive half: nothing in the app, including a
  * renderer stuck in a loop, can fire more than the configured number of calls
  * a minute per feature. Slots get separate buckets for the same reason they
@@ -28,7 +28,7 @@ const buckets = new Map<KeySlot, Bucket>()
 
 export function ratePerMinute(db: Db): number {
   return clampRate(
-    getNumber(db, SETTING.geminiRatePerMinute, DEFAULT_PER_MINUTE)
+    getNumber(db, SETTING.aiRatePerMinute, DEFAULT_PER_MINUTE)
   )
 }
 
@@ -37,7 +37,7 @@ export function setRatePerMinute(db: Db, perMinute: number): number {
     throw new Error('The rate has to be a number of calls per minute.')
   }
   const clamped = clampRate(Math.round(perMinute))
-  setSetting(db, SETTING.geminiRatePerMinute, String(clamped))
+  setSetting(db, SETTING.aiRatePerMinute, String(clamped))
   return clamped
 }
 

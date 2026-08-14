@@ -1,4 +1,4 @@
-import type { UiPrefs } from '@shared/types'
+import type { KeySlot, UiPrefs } from '@shared/types'
 import type { Db } from './index'
 
 /**
@@ -52,8 +52,14 @@ export const SETTING = {
    */
   codeHome: 'projects.code_home',
   creativeHome: 'projects.creative_home',
-  /** Gemini calls allowed per minute, per feature slot. */
-  geminiRatePerMinute: 'gemini.rate_per_minute',
+  /**
+   * AI calls allowed per minute, per feature slot.
+   *
+   * The stored key still says `gemini` because it predates there being anything
+   * else, and renaming it would silently reset the limit for everyone who has
+   * already tuned it. The string is storage; the name beside it is the meaning.
+   */
+  aiRatePerMinute: 'gemini.rate_per_minute',
 
   /**
    * Appearance. Stored here rather than in the renderer so the main process can
@@ -63,6 +69,21 @@ export const SETTING = {
   theme: 'ui.theme',
   /** Whether storyboard scene cards show their position on the board. */
   sceneNumbers: 'ui.scene_numbers'
+} as const
+
+/**
+ * Which provider each key slot talks to, and what to ask it for.
+ *
+ * Per slot rather than per app, matching the keys themselves — and stored in
+ * `settings` rather than beside the key, because none of it is a secret and all
+ * of it is worth carrying in a backup. The key is the only part that must not
+ * travel; see services/secrets.ts.
+ */
+export const SLOT_SETTING = {
+  provider: (slot: KeySlot): string => `ai.provider.${slot}`,
+  /** Only read for the `custom` provider. */
+  baseUrl: (slot: KeySlot): string => `ai.base_url.${slot}`,
+  model: (slot: KeySlot): string => `ai.model.${slot}`
 } as const
 
 /** 2½ hours of focused study a day is already an ambitious default. */

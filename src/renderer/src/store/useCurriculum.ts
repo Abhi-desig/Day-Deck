@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import type {
+  AiModel,
+  AiProvider,
   CurriculumInput,
   CurriculumPlan,
   CurriculumProgress,
-  GeminiModel,
   GoalNote,
   GoalNotePatch,
   GoalsOverview,
@@ -32,7 +33,24 @@ interface CurriculumState {
   composing: boolean
 
   keyStatus: KeyStatus | null
-  models: GeminiModel[]
+  /**
+   * Who the goals slot actually talks to.
+   *
+   * Held here so this whole section can name the provider instead of saying
+   * "Gemini" at the user regardless of what they configured. Settings owns
+   * changing it; Goals Admin only reports it.
+   */
+  goalsProvider: AiProvider
+  /**
+   * The model chosen for the goals slot in Settings, or '' for none.
+   *
+   * Only a starting point: a goal stores the model it was generated with on its
+   * own row, so this preselects the composer's dropdown rather than deciding
+   * anything. Without it the Settings choice would be a control that writes a
+   * value nothing ever reads.
+   */
+  goalsModel: string
+  models: AiModel[]
   modelsError: string | null
   loadingModels: boolean
   ready: boolean
@@ -92,6 +110,8 @@ export const useCurriculum = create<CurriculumState>((set, get) => ({
   composing: false,
 
   keyStatus: null,
+  goalsProvider: 'gemini',
+  goalsModel: '',
   models: [],
   modelsError: null,
   loadingModels: false,
@@ -110,14 +130,18 @@ export const useCurriculum = create<CurriculumState>((set, get) => ({
 
   async load() {
     try {
-      const [overview, keyStatus] = await Promise.all([
+      const [overview, keyStatus, configs] = await Promise.all([
         api.curriculum.overview(),
-        api.settings.keyStatus()
+        api.settings.keyStatus(),
+        api.settings.slotConfigs()
       ])
+      const goals = configs.find((c) => c.slot === 'goals')
       set({
         overview,
         selectedId: reconcile(overview, get().selectedId),
         keyStatus,
+        goalsProvider: goals?.provider ?? 'gemini',
+        goalsModel: goals?.model ?? '',
         ready: true
       })
       if (keyStatus.present) void get().loadModels()
@@ -129,7 +153,7 @@ export const useCurriculum = create<CurriculumState>((set, get) => ({
   async loadModels() {
     set({ loadingModels: true, modelsError: null })
     try {
-      set({ models: await api.settings.models(), loadingModels: false })
+      set({ models: await api.settings.models('goals'), loadingModels: false })
     } catch (err) {
       // A missing model list is recoverable — the saved model still works.
       set({ loadingModels: false, modelsError: message(err) })

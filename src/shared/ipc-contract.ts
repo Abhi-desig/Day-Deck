@@ -2,6 +2,8 @@ import type { DateKey } from './date'
 import type {
   AgentMessage,
   AgentReply,
+  AiModel,
+  AiProvider,
   AssetsFiled,
   AssetsMoved,
   BackupWritten,
@@ -20,7 +22,6 @@ import type {
   FileNode,
   FileReadResult,
   FileSaved,
-  GeminiModel,
   GoalNote,
   GoalNotePatch,
   GoalsOverview,
@@ -55,6 +56,7 @@ import type {
   SceneApply,
   ScenePlanProposal,
   Slot,
+  SlotConfig,
   SlotPatch,
   SlotStatus,
   Sticker,
@@ -112,7 +114,7 @@ export const IPC = {
   curriculumSetCap: 'curriculum:setCap',
   /** Fills in missing learning points for a goal's topics. */
   curriculumSubdivide: 'curriculum:subdivide',
-  /** main -> renderer, one-way progress during a long Gemini call. */
+  /** main -> renderer, one-way progress during a long model call. */
   curriculumProgress: 'curriculum:progress',
 
   notesList: 'notes:list',
@@ -195,11 +197,11 @@ export const IPC = {
   styleNodesPlace: 'styleNodes:place',
   styleNodesMove: 'styleNodes:move',
   styleNodesRemove: 'styleNodes:remove',
-  /** Asks Gemini for a scene breakdown. Writes nothing. */
+  /** Asks the scenes slot's provider for a scene breakdown. Writes nothing. */
   boardsPlanScenes: 'boards:planScenes',
   /** Writes the subset of a plan the user approved, in one transaction. */
   boardsApplyScenePlan: 'boards:applyScenePlan',
-  /** Asks Gemini for a prompt per existing scene. Writes nothing. */
+  /** Asks the prompts slot's provider for a prompt per scene. Writes nothing. */
   boardsPlanPrompts: 'boards:planPrompts',
   /** Writes the approved prompts — the prompt column only. */
   boardsApplyPromptPlan: 'boards:applyPromptPlan',
@@ -213,7 +215,18 @@ export const IPC = {
   settingsSetKey: 'settings:setKey',
   settingsClearKey: 'settings:clearKey',
   settingsTestKey: 'settings:testKey',
-  /** Gemini calls per minute, per feature slot. */
+  /**
+   * Which provider each slot talks to, where to reach it, and what to ask for.
+   *
+   * Separate from the key channels above because these are ordinary settings —
+   * readable, backed up, and safe to send back to the renderer, none of which
+   * is true of the key itself.
+   */
+  settingsSlotConfigs: 'settings:slotConfigs',
+  settingsSetProvider: 'settings:setProvider',
+  settingsSetBaseUrl: 'settings:setBaseUrl',
+  settingsSetModel: 'settings:setModel',
+  /** AI calls per minute, per feature slot. */
   settingsGetRate: 'settings:getRate',
   settingsSetRate: 'settings:setRate',
   /**
@@ -227,7 +240,8 @@ export const IPC = {
   settingsGetPrefs: 'settings:getPrefs',
   settingsSetTheme: 'settings:setTheme',
   settingsSetSceneNumbers: 'settings:setSceneNumbers',
-  geminiModels: 'gemini:models',
+  /** One slot's provider, asked live. Never a hardcoded list. */
+  aiModels: 'ai:models',
 
   projectsList: 'projects:list',
   projectsAdd: 'projects:add',
@@ -536,8 +550,36 @@ export interface DeckApi {
     clearKey(slot?: KeySlot): Promise<KeyStatus>
     /** Validates `key` if given, otherwise the slot's saved (or default) one. */
     testKey(key?: string, slot?: KeySlot): Promise<{ models: number }>
-    models(): Promise<GeminiModel[]>
-    /** Gemini calls allowed per minute, per feature slot. */
+
+    /**
+     * Which provider every slot resolves to, in one round trip.
+     *
+     * All of them at once because they are read together and one depends on
+     * another: a slot showing an inherited provider is showing the default
+     * slot's, so fetching them separately would let the panel render a set that
+     * never existed at any single moment.
+     */
+    slotConfigs(): Promise<SlotConfig[]>
+    /**
+     * Clears the slot's saved model — a model id does not survive the switch.
+     * `''` clears the slot's own choice so it follows the default slot again.
+     */
+    setProvider(slot: KeySlot, provider: AiProvider | ''): Promise<SlotConfig>
+    /** Only meaningful for `custom`. Must be an http(s) origin. */
+    setBaseUrl(slot: KeySlot, url: string): Promise<SlotConfig>
+    /** '' hands the slot back to its provider's default. */
+    setModel(slot: KeySlot, model: string): Promise<SlotConfig>
+
+    /**
+     * The models one slot's provider actually offers, asked live.
+     *
+     * `key` lets Settings list against a key that has not been saved yet, which
+     * is the only way to find out whether one works before committing it to the
+     * keychain.
+     */
+    models(slot?: KeySlot, key?: string): Promise<AiModel[]>
+
+    /** AI calls allowed per minute, per feature slot. */
     rate(): Promise<number>
     setRate(perMinute: number): Promise<number>
 

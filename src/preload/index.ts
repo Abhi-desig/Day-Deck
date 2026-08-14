@@ -23,7 +23,7 @@ function subscribe<T>(
 /**
  * The entire privileged surface the renderer gets. Everything is an `invoke`
  * round-trip to a validating handler in main/ipc — no fs, no db, no Node, and
- * deliberately no way to read the stored Gemini API key back out.
+ * deliberately no way to read a stored API key back out.
  */
 const api: DeckApi = {
   /**
@@ -191,7 +191,14 @@ const api: DeckApi = {
     setKey: (key, slot) => ipcRenderer.invoke(IPC.settingsSetKey, key, slot),
     clearKey: (slot) => ipcRenderer.invoke(IPC.settingsClearKey, slot),
     testKey: (key, slot) => ipcRenderer.invoke(IPC.settingsTestKey, key, slot),
-    models: () => ipcRenderer.invoke(IPC.geminiModels),
+    slotConfigs: () => ipcRenderer.invoke(IPC.settingsSlotConfigs),
+    setProvider: (slot, provider) =>
+      ipcRenderer.invoke(IPC.settingsSetProvider, slot, provider),
+    setBaseUrl: (slot, url) =>
+      ipcRenderer.invoke(IPC.settingsSetBaseUrl, slot, url),
+    setModel: (slot, model) =>
+      ipcRenderer.invoke(IPC.settingsSetModel, slot, model),
+    models: (slot, key) => ipcRenderer.invoke(IPC.aiModels, slot, key),
     rate: () => ipcRenderer.invoke(IPC.settingsGetRate),
     setRate: (perMinute) => ipcRenderer.invoke(IPC.settingsSetRate, perMinute),
     prefs: () => ipcRenderer.invoke(IPC.settingsGetPrefs),

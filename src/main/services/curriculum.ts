@@ -18,8 +18,7 @@ import {
   SETTING,
   setSetting
 } from '../db/settings'
-import { decomposeCurriculum, subdivideTopics } from './gemini'
-import { requireApiKey } from './secrets'
+import { decomposeCurriculum, subdivideTopics } from './ai'
 import { eligibleDays, schedule } from './scheduler'
 
 type Progress = (update: CurriculumProgress) => void
@@ -98,7 +97,7 @@ export function setDailyCap(db: Db, minutes: number): GoalsOverview {
 /**
  * Turn pasted text into a dated plan.
  *
- * Gemini is asked only to decompose; every date below comes from the local
+ * The model is asked only to decompose; every date below comes from the local
  * scheduler. That split is what makes the deadline exact and makes every later
  * reflow free and offline.
  *
@@ -110,7 +109,6 @@ export async function generatePlan(
   input: CurriculumInput,
   onProgress: Progress
 ): Promise<CurriculumPlan> {
-  const apiKey = requireApiKey('goals')
   const start = todayKey()
 
   const days = eligibleDays(start, input.deadline, input.restDays)
@@ -124,7 +122,7 @@ export async function generatePlan(
   onProgress({ phase: 'decomposing' })
 
   const drafts = await decomposeCurriculum({
-    apiKey,
+    db,
     model: input.model,
     title: input.title,
     rawText: input.rawText,
@@ -134,7 +132,7 @@ export async function generatePlan(
 
   onProgress({ phase: 'scheduling', topics: drafts.length })
 
-  // Nothing is written until Gemini has actually returned something, so a
+  // Nothing is written until the model has actually returned something, so a
   // failed call leaves the existing goals untouched.
   const curriculum = repo.create(db, input, start)
   const topics = repo.replaceTopics(db, curriculum.id, drafts)
@@ -194,7 +192,6 @@ export async function subdivideGoal(
     return { plan: planFor(db, curriculumId), topicsSubdivided: 0, error: null }
   }
 
-  const apiKey = requireApiKey('goals')
   const excerpt = curriculum.rawText.slice(0, EXCERPT_CHARS)
 
   let updated = 0
@@ -206,7 +203,7 @@ export async function subdivideGoal(
 
     try {
       const breakdowns = await subdivideTopics({
-        apiKey,
+        db,
         model: curriculum.model,
         goalTitle: curriculum.title,
         curriculumExcerpt: excerpt,

@@ -5,7 +5,7 @@ import type { KeySlot, KeyStatus } from '@shared/types'
 import { KEY_SLOTS } from '@shared/types'
 
 /**
- * The Gemini API keys live here and nowhere else.
+ * The API keys live here and nowhere else.
  *
  * One encrypted file per slot, all through the OS keychain (Keychain Services
  * on macOS) and read only inside the main process. There is deliberately no
@@ -13,9 +13,11 @@ import { KEY_SLOTS } from '@shared/types'
  * filled and nothing more, so a rogue script in the renderer has nothing to
  * exfiltrate.
  *
- * Keys are deliberately NOT in SQLite: the settings table is plaintext and the
- * backup exporter dumps it verbatim. A key that rode along in a backup file
- * would outlive every promise this module makes.
+ * Whose key it is is not stored here: which provider a slot talks to is
+ * ordinary configuration, lives in `settings`, and belongs in a backup. Only
+ * the secret itself is kept out of one — the settings table is plaintext and
+ * the backup exporter dumps it verbatim, so a key that rode along in a backup
+ * file would outlive every promise this module makes.
  */
 
 const isSlot = (value: string): value is KeySlot =>
@@ -26,7 +28,13 @@ function keyFile(slot: KeySlot): string {
   return join(app.getPath('userData'), `${slot}.key`)
 }
 
-/** Where the single pre-slot key lived. Renamed into `default` on first use. */
+/**
+ * Where the single pre-slot key lived. Renamed into `default` on first use.
+ *
+ * The filename says gemini because that is what it was called when it was
+ * written, and a file that already exists on someone's disk does not get to be
+ * renamed by hindsight.
+ */
 const legacyFile = (): string => join(app.getPath('userData'), 'gemini.key')
 
 let migrated = false
@@ -84,20 +92,15 @@ export function getApiKey(slot: KeySlot = 'default'): string | null {
 }
 
 /**
- * The key a feature actually calls with.
+ * There is deliberately no `requireApiKey` here any more.
  *
- * An empty slot falls back to `default`, so per-feature keys are an option and
- * never a requirement — one key in the default slot runs the whole app.
+ * Falling an empty slot back to the default one used to be a pure convenience,
+ * and this was the right place for it. It is not pure any more: whether the
+ * fallback is even *valid* depends on whether the two slots are the same
+ * vendor, which this module has no business knowing. Resolving a key now
+ * happens in services/providers, beside the provider it has to agree with —
+ * one place that can see both halves rather than two that each see one.
  */
-export function requireApiKey(slot: KeySlot = 'default'): string {
-  const key = getApiKey(slot) ?? getApiKey('default')
-  if (!key) {
-    throw new Error(
-      'No Gemini API key is saved. Add one in Settings before generating.'
-    )
-  }
-  return key
-}
 
 export function clearApiKey(slot: KeySlot = 'default'): void {
   ensureMigrated()

@@ -16,14 +16,14 @@ import {
   sortStyleText,
   type SheetLine,
   type StyleSortResult
-} from './gemini'
-import { requireApiKey } from './secrets'
+} from './ai'
+import { borrowedModel } from './providers/model'
 
 /**
  * Turning a brief into scenes, in two separate operations.
  *
  * Proposing and applying are deliberately not one call. `propose` reads, asks
- * Gemini and returns — it writes nothing at all, so "nothing changes until you
+ * the model and returns — it writes nothing at all, so "nothing changes until you
  * approve it" is a property of this module's surface rather than a promise the
  * approval window is making on its own. `apply` then takes only what came back
  * ticked.
@@ -101,8 +101,8 @@ export async function propose(
   )
 
   const scenes = await askForScenes({
-    apiKey: requireApiKey('scenes'),
-    model: modelFor(db),
+    db,
+    model: modelFor(db, 'scenes'),
     brief: board.brief,
     visualStyle: board.visualStyle,
     style,
@@ -126,7 +126,7 @@ export async function propose(
     scenes[i].prompt = frames[i].prompt
   }
 
-  return { scenes, model: modelFor(db), styleName: style?.name ?? null }
+  return { scenes, model: modelFor(db, 'scenes'), styleName: style?.name ?? null }
 }
 
 /**
@@ -136,17 +136,20 @@ export async function propose(
  * concept in a codebase that deliberately picks per record. Reusing whatever the
  * user's own goals are already generating with keeps it to one choice they have
  * made once, in a place they know about.
+ *
+ * That reuse is now conditional on the two slots being the same provider —
+ * see `borrowedModel`. A board planned on a slot pointed at a different vendor
+ * uses that slot's own model instead, because a Gemini model id is not
+ * something xAI can be asked for.
  */
-function modelFor(db: Db): string {
+function modelFor(db: Db, slot: 'scenes' | 'prompts'): string {
   const row = db
     .prepare<[], { model: string }>(
       `SELECT model FROM curricula ORDER BY created_at DESC LIMIT 1`
     )
     .get()
-  return row?.model ?? DEFAULT_MODEL
+  return borrowedModel(db, slot, row?.model ?? null)
 }
-
-const DEFAULT_MODEL = 'gemini-3.5-flash'
 
 /**
  * Write the accepted subset.
@@ -270,8 +273,10 @@ export async function proposePrompts(
     references: refsByFrame.get(frame.id) ?? []
   }))
 
-  const apiKey = requireApiKey('prompts')
-  const model = modelFor(db)
+  const model = modelFor(db, 'prompts')
+  // Read once, not once per batch — the cast cannot change while the loop runs,
+  // and re-reading it per batch was work that only looked free.
+  const characters = castOf(db, boardId)
   const prompts: PromptPlanProposal['prompts'] = []
 
   for (let start = 0; start < scenes.length; start += PROMPT_BATCH) {
@@ -280,13 +285,13 @@ export async function proposePrompts(
       .map((s) => s.number)
 
     const batch = await askForPrompts({
-      apiKey,
+      db,
       model,
       brief: board.brief,
       visualStyle: board.visualStyle,
       style,
       briefReferences,
-      characters: castOf(db, boardId),
+      characters,
       scenes,
       write
     })
@@ -300,7 +305,7 @@ export async function proposePrompts(
   }
 
   if (prompts.length === 0) {
-    throw new Error('Gemini did not return a prompt for any scene.')
+    throw new Error('The model did not return a prompt for any scene.')
   }
 
   return { prompts, model, styleName: style?.name ?? null }
@@ -328,8 +333,8 @@ export async function parseStyle(
   }
 
   return sortStyleText({
-    apiKey: requireApiKey('scenes'),
-    model: modelFor(db),
+    db,
+    model: modelFor(db, 'scenes'),
     text: style.sourceText
   })
 }

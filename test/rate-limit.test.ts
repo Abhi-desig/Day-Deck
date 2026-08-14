@@ -16,7 +16,7 @@ const { makeDb } = await import('./helpers')
 
 /**
  * The proactive half of rate control: a bucket per feature slot, refilled
- * continuously, in front of every Gemini call. Time is passed in, so these
+ * continuously, in front of every AI call. Time is passed in, so these
  * tests never sleep.
  */
 
@@ -30,7 +30,7 @@ beforeEach(() => {
 
 describe('the token bucket', () => {
   it('allows a burst up to the rate, then refuses with a wait', () => {
-    setSetting(db, SETTING.geminiRatePerMinute, '3')
+    setSetting(db, SETTING.aiRatePerMinute, '3')
 
     limiter.takeToken(db, 'scenes', T0)
     limiter.takeToken(db, 'scenes', T0)
@@ -39,7 +39,7 @@ describe('the token bucket', () => {
   })
 
   it('refills continuously rather than at the top of a minute', () => {
-    setSetting(db, SETTING.geminiRatePerMinute, '6')
+    setSetting(db, SETTING.aiRatePerMinute, '6')
     for (let i = 0; i < 6; i++) limiter.takeToken(db, 'goals', T0)
     expect(() => limiter.takeToken(db, 'goals', T0)).toThrow(/rate limit/i)
 
@@ -49,7 +49,7 @@ describe('the token bucket', () => {
   })
 
   it('never stockpiles beyond the rate', () => {
-    setSetting(db, SETTING.geminiRatePerMinute, '2')
+    setSetting(db, SETTING.aiRatePerMinute, '2')
     // An hour of silence still only buys the burst size.
     limiter.takeToken(db, 'agent', T0)
     limiter.takeToken(db, 'agent', T0 + 3_600_000)
@@ -60,7 +60,7 @@ describe('the token bucket', () => {
   })
 
   it('gives every slot its own bucket', () => {
-    setSetting(db, SETTING.geminiRatePerMinute, '1')
+    setSetting(db, SETTING.aiRatePerMinute, '1')
     limiter.takeToken(db, 'scenes', T0)
     // scenes is spent; prompts is untouched.
     expect(() => limiter.takeToken(db, 'scenes', T0)).toThrow()
@@ -68,7 +68,7 @@ describe('the token bucket', () => {
   })
 
   it('says how long to wait', () => {
-    setSetting(db, SETTING.geminiRatePerMinute, '6')
+    setSetting(db, SETTING.aiRatePerMinute, '6')
     for (let i = 0; i < 6; i++) limiter.takeToken(db, 'default', T0)
     expect(() => limiter.takeToken(db, 'default', T0)).toThrow(/about 10s/)
   })
@@ -87,7 +87,7 @@ describe('the configured rate', () => {
   })
 
   it('degrades a hand-edited setting to the default', () => {
-    setSetting(db, SETTING.geminiRatePerMinute, 'lots please')
+    setSetting(db, SETTING.aiRatePerMinute, 'lots please')
     expect(limiter.ratePerMinute(db)).toBe(8)
   })
 })

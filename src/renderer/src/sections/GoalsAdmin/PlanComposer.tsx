@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { addDays, labelFor, todayKey } from '@shared/date'
 import type { CurriculumInput, CurriculumProgress } from '@shared/types'
+import { PROVIDER_INFO } from '@shared/types'
 import { useCurriculum } from '../../store/useCurriculum'
 import { cn } from '../../lib/cn'
 import { EASE_OUT, SPRING } from '../../lib/motion'
@@ -9,10 +10,12 @@ import { AuroraBackground } from '../../components/aceternity/AuroraBackground'
 import { AnimatedShinyText } from '../../components/magicui/AnimatedShinyText'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-const PREFERRED_MODEL = 'gemini-3.5-flash'
 
 const PROGRESS_COPY: Record<CurriculumProgress['phase'], string> = {
-  contacting: 'Reaching Gemini…',
+  // `{provider}` is substituted with whichever provider the goals slot is on,
+  // because "Reaching Gemini…" while calling xAI is a small lie the user has no
+  // way to check.
+  contacting: 'Reaching {provider}…',
   decomposing: 'Breaking the curriculum into single-sitting topics…',
   scheduling: 'Assigning every topic a real date…',
   materialising: 'Placing topics onto your day cards…',
@@ -35,24 +38,33 @@ export function PlanComposer({ onCancel }: PlanComposerProps) {
   const generate = useCurriculum((s) => s.generate)
   const keyStatus = useCurriculum((s) => s.keyStatus)
   const overview = useCurriculum((s) => s.overview)
+  const provider = useCurriculum((s) => s.goalsProvider)
+  const goalsModel = useCurriculum((s) => s.goalsModel)
+
+  const providerLabel = PROVIDER_INFO[provider].label
+  // What Settings chose for the goals slot, falling back to the provider's own
+  // default. Either way the live list below has the last word.
+  const preferredModel = goalsModel || PROVIDER_INFO[provider].defaultModel
 
   const [title, setTitle] = useState('')
   const [rawText, setRawText] = useState('')
   const [deadline, setDeadline] = useState(() => addDays(todayKey(), 180))
   const [minutesPerDay, setMinutesPerDay] = useState(90)
   const [restDays, setRestDays] = useState<number[]>([0])
-  const [model, setModel] = useState(PREFERRED_MODEL)
+  const [model, setModel] = useState(preferredModel)
 
-  // Snap to a model that actually exists once the live list arrives.
+  // Snap to a model that actually exists once the live list arrives. The
+  // provider's own default is only a starting guess — switching providers
+  // invalidates it entirely, which is why the live list has the last word.
   useEffect(() => {
     if (models.length === 0) return
     if (models.some((m) => m.id === model)) return
     const preferred =
-      models.find((m) => m.id === PREFERRED_MODEL) ??
-      models.find((m) => m.id.includes('flash')) ??
+      models.find((m) => m.id === preferredModel) ??
+      models.find((m) => m.id.includes('flash') || m.id.includes('mini')) ??
       models[0]
     setModel(preferred.id)
-  }, [models, model])
+  }, [models, model, preferredModel])
 
   const deadlineLabel = useMemo(() => {
     const label = labelFor(deadline)
@@ -117,7 +129,7 @@ export function PlanComposer({ onCancel }: PlanComposerProps) {
           value={rawText}
           onChange={(e) => setRawText(e.target.value)}
           placeholder={
-            'Paste the whole curriculum here — modules, topics, whatever structure you have.\n\nGemini breaks it into single-sitting topics. Day Deck does the dates.'
+            `Paste the whole curriculum here — modules, topics, whatever structure you have.\n\n${providerLabel} breaks it into single-sitting topics. Day Deck does the dates.`
           }
           rows={10}
           aria-label="Curriculum"
@@ -272,7 +284,7 @@ export function PlanComposer({ onCancel }: PlanComposerProps) {
                   transition={{ duration: 1.4, repeat: Infinity }}
                 />
                 <AnimatedShinyText className="text-[12.5px]">
-                  {PROGRESS_COPY[progress.phase]}
+                  {PROGRESS_COPY[progress.phase].replace('{provider}', providerLabel)}
                 </AnimatedShinyText>
               </div>
             </motion.div>
@@ -293,7 +305,7 @@ export function PlanComposer({ onCancel }: PlanComposerProps) {
 
         {!keyStatus?.present && (
           <p className="mt-4 text-[12px] text-ink-faint">
-            Add a Gemini API key above to enable plan generation.
+            Add a {providerLabel} API key above to enable plan generation.
           </p>
         )}
       </div>
