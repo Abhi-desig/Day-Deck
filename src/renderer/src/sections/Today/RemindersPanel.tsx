@@ -69,7 +69,7 @@ export function RemindersPanel({ open, onClose }: RemindersPanelProps) {
           />
 
           <motion.aside
-            className="glass absolute inset-y-0 right-0 z-[301] flex w-[380px] flex-col border-l border-white/10 shadow-[-24px_0_60px_-20px_rgb(0_0_0/0.7)]"
+            className="glass absolute inset-y-0 right-0 z-[301] flex w-[380px] flex-col border-l border-hairline drawer-shadow"
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}

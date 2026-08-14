@@ -19,19 +19,19 @@ interface Blob {
 
 const BLOBS: Blob[] = [
   {
-    color: 'rgba(255, 176, 32, 0.20)',
+    color: 'var(--aurora-1)',
     className: '-top-40 left-[6%] size-[560px]',
     drift: { x: [0, 70, -30, 0], y: [0, 45, 25, 0] },
     duration: 28
   },
   {
-    color: 'rgba(124, 156, 255, 0.16)',
+    color: 'var(--aurora-2)',
     className: 'top-[18%] right-[2%] size-[480px]',
     drift: { x: [0, -60, 25, 0], y: [0, 35, -20, 0] },
     duration: 34
   },
   {
-    color: 'rgba(94, 234, 212, 0.11)',
+    color: 'var(--aurora-3)',
     className: 'bottom-[-18%] left-[32%] size-[520px]',
     drift: { x: [0, 40, -45, 0], y: [0, -30, 15, 0] },
     duration: 41

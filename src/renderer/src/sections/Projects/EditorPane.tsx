@@ -3,7 +3,13 @@ import Editor, { type OnMount } from '@monaco-editor/react'
 import { AnimatePresence, motion } from 'motion/react'
 import { cn } from '../../lib/cn'
 import { EASE_OUT, SPRING } from '../../lib/motion'
-import { DAY_DECK_THEME, EDITOR_OPTIONS, monaco } from '../../lib/monaco'
+import {
+  DAY_DECK_THEME,
+  DAY_DECK_THEME_LIGHT,
+  EDITOR_OPTIONS,
+  monaco
+} from '../../lib/monaco'
+import { usePrefs } from '../../store/usePrefs'
 import { useWorkspace } from '../../store/useWorkspace'
 
 /**
@@ -14,6 +20,7 @@ import { useWorkspace } from '../../store/useWorkspace'
  * remounting the editor per file would throw both away.
  */
 export function EditorPane({ settleToken }: { settleToken: number }) {
+  const theme = usePrefs((s) => s.theme)
   const buffers = useWorkspace((s) => s.buffers)
   const openOrder = useWorkspace((s) => s.openOrder)
   const activePath = useWorkspace((s) => s.activePath)
@@ -112,7 +119,11 @@ export function EditorPane({ settleToken }: { settleToken: number }) {
                 path={buffer.path}
                 language={buffer.language}
                 value={buffer.text}
-                theme={DAY_DECK_THEME}
+                // @monaco-editor/react calls monaco.editor.setTheme in an
+                // effect keyed on this prop, so switching is just a rename.
+                theme={
+                  theme === 'light' ? DAY_DECK_THEME_LIGHT : DAY_DECK_THEME
+                }
                 options={EDITOR_OPTIONS}
                 onMount={onMount}
                 onChange={(value) => edit(buffer.path, value ?? '')}

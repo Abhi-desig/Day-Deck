@@ -3,6 +3,7 @@ import { MotionConfig, motion } from 'motion/react'
 import { SECTIONS } from '@shared/types'
 import { useDeck } from './store/useDeck'
 import { useProjects } from './store/useProjects'
+import { usePrefs } from './store/usePrefs'
 import { useShell } from './store/useShell'
 import { useStickers } from './store/useStickers'
 import { useTags } from './store/useTags'
@@ -32,6 +33,13 @@ export function App() {
   const init = useDeck((s) => s.init)
   const loadStickers = useStickers((s) => s.load)
   const loadTags = useTags((s) => s.load)
+  const loadPrefs = usePrefs((s) => s.load)
+
+  // Reconciles the cached theme main.tsx painted with against what is actually
+  // stored, and brings the rest of the view preferences with it.
+  useEffect(() => {
+    void loadPrefs()
+  }, [loadPrefs])
 
   useEffect(() => {
     void init()

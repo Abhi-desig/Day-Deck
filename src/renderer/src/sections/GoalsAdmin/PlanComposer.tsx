@@ -247,7 +247,7 @@ export function PlanComposer({ onCancel }: PlanComposerProps) {
               className={cn(
                 'rounded-lg px-4 py-2.5 text-[13px] transition-colors',
                 canSubmit
-                  ? 'bg-amber text-canvas hover:bg-amber-soft'
+                  ? 'bg-amber text-on-accent hover:bg-amber-soft'
                   : 'border border-line-soft text-ink-faint/60'
               )}
             >

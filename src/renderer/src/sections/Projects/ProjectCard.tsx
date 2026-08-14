@@ -6,13 +6,20 @@ import { cn } from '../../lib/cn'
 import { goalStyle } from '../../lib/goalColor'
 import { SPRING } from '../../lib/motion'
 
-/** The spotlight tint per palette colour, matching --color-goal-* in globals.css. */
+/**
+ * The spotlight tint per palette colour.
+ *
+ * Indirected through custom properties rather than held as literals: this
+ * reaches the DOM as an inline style, so Tailwind never sees it and a theme
+ * swap would otherwise leave a bright dark-theme glow smeared across a white
+ * card. The values live beside the other decorative colour in globals.css.
+ */
 const GLOW: Record<Project['color'], string> = {
-  amber: 'rgb(255 176 32 / 0.42)',
-  violet: 'rgb(167 139 250 / 0.42)',
-  sky: 'rgb(124 156 255 / 0.42)',
-  mint: 'rgb(94 234 212 / 0.4)',
-  rose: 'rgb(251 113 133 / 0.4)'
+  amber: 'var(--glow-amber)',
+  violet: 'var(--glow-violet)',
+  sky: 'var(--glow-sky)',
+  mint: 'var(--glow-mint)',
+  rose: 'var(--glow-rose)'
 }
 
 interface ProjectCardProps {

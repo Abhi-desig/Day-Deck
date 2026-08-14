@@ -42,7 +42,9 @@ interface MagicCardProps {
 export function MagicCard({
   children,
   className,
-  glow = 'rgb(255 176 32 / 0.5)',
+  // Themed, for the same reason as ProjectCard's map: this ends up in an inline
+  // style, so nothing else would follow a theme swap.
+  glow = 'var(--glow-amber)',
   onClick,
   layoutId
 }: MagicCardProps) {

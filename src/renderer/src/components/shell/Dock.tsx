@@ -46,7 +46,7 @@ const META: Record<SectionId, { label: string; hint: string; path: string }> = {
   },
   settings: {
     label: 'Settings',
-    hint: 'Keys, rate limits, homes',
+    hint: 'Appearance, keys, homes',
     path: 'M10 7.2a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM10 3v2.2M10 14.8V17M3 10h2.2M14.8 10H17M5.05 5.05l1.56 1.56M13.39 13.39l1.56 1.56M14.95 5.05l-1.56 1.56M6.61 13.39l-1.56 1.56'
   }
 }
@@ -112,8 +112,8 @@ export function Dock({ active, onSelect }: DockProps) {
             // The curved edges: a large radius on a narrow rail reads as a
             // lozenge rather than a rounded rectangle, which is the difference
             // between a dock and a sidebar.
-            'rounded-[26px] border border-white/10 glass',
-            'shadow-[0_20px_50px_-16px_rgb(0_0_0/0.75)]'
+            'rounded-[26px] border border-hairline glass',
+            'dock-shadow'
           )}
         >
           {SECTIONS.map((id) => (
@@ -127,7 +127,7 @@ export function Dock({ active, onSelect }: DockProps) {
             />
           ))}
 
-          <span className="my-0.5 h-px w-6 bg-white/10" aria-hidden />
+          <span className="my-0.5 h-px w-6 bg-hairline" aria-hidden />
 
           <DockButton
             label="Backup & database"
@@ -295,7 +295,7 @@ function Slot({
         <motion.span
           layoutId={layoutId}
           transition={SPRING.snap}
-          className="absolute inset-0 rounded-[14px] border border-white/12 bg-white/10"
+          className="absolute inset-0 rounded-[14px] border border-hairline-strong bg-hover-strong"
         />
       )}
 
@@ -323,8 +323,8 @@ function Slot({
         role="tooltip"
         className={cn(
           'pointer-events-none absolute left-[calc(100%+10px)] top-1/2 z-10 -translate-y-1/2',
-          'whitespace-nowrap rounded-lg border border-white/10 bg-surface/95 px-2 py-1',
-          'text-left opacity-0 shadow-lg shadow-black/50 backdrop-blur-xl',
+          'whitespace-nowrap rounded-lg border border-hairline bg-surface/95 px-2 py-1',
+          'text-left opacity-0 popover-shadow backdrop-blur-xl',
           'transition-opacity duration-150 group-hover:opacity-100'
         )}
         style={{ scale: counterScale, originX: 0 }}

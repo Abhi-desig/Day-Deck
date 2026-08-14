@@ -11,6 +11,8 @@ import {
 } from '@shared/types'
 import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
+import { SPRING } from '../../lib/motion'
+import { usePrefs } from '../../store/usePrefs'
 import { useProjects } from '../../store/useProjects'
 
 /**
@@ -60,7 +62,7 @@ export function Settings() {
       <header className="flex shrink-0 items-baseline gap-3 pb-4">
         <h1 className="text-[19px] font-medium tracking-[-0.02em]">Settings</h1>
         <span className="text-[12.5px] text-ink-faint">
-          Keys, rate limits, and where things live
+          Appearance, keys, rate limits, and where things live
         </span>
       </header>
 
@@ -76,6 +78,8 @@ export function Settings() {
           </button>
         </div>
       )}
+
+      <Appearance />
 
       <section className="mb-4 rounded-xl border border-line-soft bg-surface/70 p-5">
         <h2 className="text-[14px] tracking-[-0.01em]">API keys</h2>
@@ -323,5 +327,56 @@ function HomeRow({
         {home ? 'Change…' : 'Choose…'}
       </button>
     </div>
+  )
+}
+
+/**
+ * Light or dark.
+ *
+ * First card in the panel: it is the setting people come looking for, and it is
+ * the only one here that changes what the rest of the panel looks like while
+ * they are reading it.
+ */
+function Appearance() {
+  const theme = usePrefs((s) => s.theme)
+  const setTheme = usePrefs((s) => s.setTheme)
+  const light = theme === 'light'
+
+  return (
+    <section className="mb-4 rounded-xl border border-line-soft bg-surface/70 p-5">
+      <h2 className="text-[14px] tracking-[-0.01em]">Appearance</h2>
+      <p className="mt-1 max-w-xl text-[12px] leading-relaxed text-ink-faint">
+        Dark is the app's native mode — the deck is built around glass over a lit
+        room. Light swaps that for white cards on soft shadows, and takes the
+        editor and terminal with it.
+      </p>
+
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={light}
+          aria-label="Light theme"
+          onClick={() => void setTheme(light ? 'dark' : 'light')}
+          className={cn(
+            'relative h-[20px] w-[34px] shrink-0 rounded-full transition-colors',
+            light ? 'bg-amber' : 'bg-line'
+          )}
+        >
+          <motion.span
+            className="absolute top-[2px] size-4 rounded-full bg-canvas"
+            initial={false}
+            animate={{ left: light ? 16 : 2 }}
+            transition={SPRING.snap}
+          />
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] text-ink">Light theme</div>
+          <div className="text-[11px] text-ink-faint">
+            {light ? 'On — white cards, soft shadows.' : 'Off — the dark deck.'}
+          </div>
+        </div>
+      </div>
+    </section>
   )
 }

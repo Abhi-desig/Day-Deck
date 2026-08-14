@@ -1,6 +1,8 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, session, shell } from 'electron'
+import { WINDOW_BACKGROUND } from '@shared/types'
 import { closeDb, getDb } from './db'
+import { getUiPrefs } from './db/settings'
 import { registerIpc } from './ipc'
 import { bindPtyLifecycle } from './ipc/workspace'
 import {
@@ -101,8 +103,10 @@ function createWindow(): void {
     minWidth: 940,
     minHeight: 660,
     show: false,
-    // Must track --color-canvas, or launch flashes the old near-black.
-    backgroundColor: '#16161b',
+    // Must track --color-canvas, or launch flashes the wrong theme. Read from
+    // the database rather than hardcoded: the window is built before the
+    // renderer runs, so this is the only thing on screen until React paints.
+    backgroundColor: WINDOW_BACKGROUND[getUiPrefs(getDb()).theme],
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 22 },
     webPreferences: {

@@ -250,7 +250,7 @@ function Row({
   return (
     <div
       className={cn(
-        'flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-white/4',
+        'flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-hover',
         busy && 'opacity-50'
       )}
     >
