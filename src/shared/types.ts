@@ -768,7 +768,17 @@ export const KEY_SLOTS = [
   'goals',
   'agent',
   'scenes',
-  'prompts'
+  'prompts',
+  /**
+   * Generating the clips themselves.
+   *
+   * Its own slot for a reason the others do not have: this is the only one
+   * denominated in seconds of video rather than tokens, and it is the only one
+   * that can spend real money on a single click. Keeping it separate means the
+   * key that writes prompts all day is not also the key that can be charged for
+   * a board's worth of generation.
+   */
+  'video'
 ] as const
 
 export type KeySlot = (typeof KEY_SLOTS)[number]
@@ -826,7 +836,40 @@ export interface AiProviderInfo {
   /** How to recognise the key, so a pasted wrong-vendor key is caught early. */
   keyHint: string
   docsUrl: string
+  /**
+   * Which video dialect this provider speaks, or null if it makes no video.
+   *
+   * Separate from `wire` because the two are genuinely different protocols, not
+   * two flavours of one: a text wire is request/response JSON, where every
+   * video API here is submit → poll a long-running operation → download bytes.
+   * A provider can have one, both, or neither.
+   *
+   * Null is the honest answer for most of this table. OpenRouter, Groq and the
+   * rest route *language* models; there is no video endpoint behind them, so a
+   * key that works perfectly for prompts cannot generate a clip no matter how
+   * it is configured. Saying so here is what lets the app explain that instead
+   * of failing with a 404 about a missing model.
+   */
+  videoWire: VideoWire | null
 }
+
+/**
+ * The video protocols the app knows how to drive.
+ *
+ * One entry per genuinely different submit/poll/download shape. Adding a video
+ * provider that speaks an existing one is a line in `PROVIDER_INFO`; adding one
+ * that speaks its own is an adapter beside `providers/veo.ts` and a name here —
+ * the same two-tier arrangement `AiWire` already has for text.
+ */
+export const VIDEO_WIRES = ['veo'] as const
+
+export type VideoWire = (typeof VIDEO_WIRES)[number]
+
+/** The providers that can actually generate video, for a message that lists them. */
+export const videoProviders = (): AiProvider[] =>
+  (Object.keys(PROVIDER_INFO) as AiProvider[]).filter(
+    (p) => PROVIDER_INFO[p].videoWire !== null
+  )
 
 export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
   gemini: {
@@ -835,7 +878,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     defaultModel: 'gemini-3.5-flash',
     keyHint: 'AIza…',
-    docsUrl: 'https://aistudio.google.com/apikey'
+    docsUrl: 'https://aistudio.google.com/apikey',
+    videoWire: 'veo'
   },
   openai: {
     label: 'OpenAI',
@@ -843,7 +887,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-5',
     keyHint: 'sk-…',
-    docsUrl: 'https://platform.openai.com/api-keys'
+    docsUrl: 'https://platform.openai.com/api-keys',
+    videoWire: null
   },
   anthropic: {
     label: 'Anthropic',
@@ -851,7 +896,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.anthropic.com/v1',
     defaultModel: 'claude-sonnet-4-5',
     keyHint: 'sk-ant-…',
-    docsUrl: 'https://console.anthropic.com/settings/keys'
+    docsUrl: 'https://console.anthropic.com/settings/keys',
+    videoWire: null
   },
   xai: {
     label: 'xAI (Grok)',
@@ -859,7 +905,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.x.ai/v1',
     defaultModel: 'grok-4',
     keyHint: 'xai-…',
-    docsUrl: 'https://console.x.ai'
+    docsUrl: 'https://console.x.ai',
+    videoWire: null
   },
   groq: {
     label: 'Groq',
@@ -867,7 +914,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.groq.com/openai/v1',
     defaultModel: '',
     keyHint: 'gsk_…',
-    docsUrl: 'https://console.groq.com/keys'
+    docsUrl: 'https://console.groq.com/keys',
+    videoWire: null
   },
   deepseek: {
     label: 'DeepSeek',
@@ -875,7 +923,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.deepseek.com/v1',
     defaultModel: 'deepseek-chat',
     keyHint: 'sk-…',
-    docsUrl: 'https://platform.deepseek.com/api_keys'
+    docsUrl: 'https://platform.deepseek.com/api_keys',
+    videoWire: null
   },
   mistral: {
     label: 'Mistral',
@@ -883,7 +932,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.mistral.ai/v1',
     defaultModel: 'mistral-large-latest',
     keyHint: '',
-    docsUrl: 'https://console.mistral.ai/api-keys'
+    docsUrl: 'https://console.mistral.ai/api-keys',
+    videoWire: null
   },
   openrouter: {
     label: 'OpenRouter',
@@ -891,7 +941,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: '',
     keyHint: 'sk-or-…',
-    docsUrl: 'https://openrouter.ai/keys'
+    docsUrl: 'https://openrouter.ai/keys',
+    videoWire: null
   },
   custom: {
     label: 'Custom (OpenAI-compatible)',
@@ -899,7 +950,8 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: '',
     defaultModel: '',
     keyHint: '',
-    docsUrl: ''
+    docsUrl: '',
+    videoWire: null
   }
 }
 
@@ -933,7 +985,11 @@ export const KEY_SLOT_LABEL: Record<KeySlot, { label: string; hint: string }> = 
     label: 'Scene planning',
     hint: 'Storyboard breakdowns and style sorting'
   },
-  prompts: { label: 'Prompt writing', hint: 'Per-scene generation prompts' }
+  prompts: { label: 'Prompt writing', hint: 'Per-scene generation prompts' },
+  video: {
+    label: 'Video generation',
+    hint: 'Needs a provider that makes video — metered per second of clip'
+  }
 }
 
 /* ------------------------------------------------------------ reminders */
@@ -1222,6 +1278,16 @@ export interface StoryFrame {
    */
   durationSec: number | null
   color: GoalColor
+  /**
+   * Whether this shot is settled, and therefore flows into the cut.
+   *
+   * A property of the scene rather than of a take: a scene can be final with
+   * three takes on it, and *which* of them is used is the separate question
+   * `StoryTake.chosen` answers.
+   */
+  isFinal: boolean
+  /** The last change asked for in words, kept so the field still says it. */
+  revisionNote: string
   sortIndex: number
   createdAt: string
 }
@@ -1241,6 +1307,8 @@ export type StoryFramePatch = Partial<
     | 'h'
     | 'durationSec'
     | 'color'
+    | 'isFinal'
+    | 'revisionNote'
     | 'sortIndex'
   >
 >
@@ -1265,6 +1333,171 @@ export const FRAME_H = 240
 export const OMNI_DURATIONS = [4, 6, 8, 10] as const
 
 export type OmniDuration = (typeof OMNI_DURATIONS)[number]
+
+/* -------------------------------------------------- generated clips */
+
+/**
+ * One generated clip.
+ *
+ * Every take is kept, not just the good one. A generation that cost money is
+ * held until the user deletes it: "regenerate" must never be the same gesture
+ * as "throw the last one away", because the last one is often the better one
+ * and there is no undo for a clip that has to be paid for twice.
+ *
+ * `fileName` is a basename, and the id *is* the name — the directory is the
+ * app's own. So no row here carries a path, which means there is nothing to
+ * sanitise because there is nothing to traverse.
+ */
+export interface StoryTake {
+  id: string
+  frameId: string
+  jobId: string | null
+  /** 0,1,2 within one generation, so a batch of three stays in its own order. */
+  takeIndex: number
+  fileName: string
+  durationSec: number
+  model: string
+  /** The exact prompt that produced this, not the frame's current one. */
+  prompt: string
+  /** A data: URI under the same 96KB cap as reference thumbnails. */
+  poster: string | null
+  chosen: boolean
+  createdAt: string
+}
+
+export const JOB_KINDS = ['generate', 'render'] as const
+
+export type JobKind = (typeof JOB_KINDS)[number]
+
+export const JOB_STATUSES = ['queued', 'running', 'done', 'error'] as const
+
+export type JobStatus = (typeof JOB_STATUSES)[number]
+
+/**
+ * A unit of work that outlives the click that started it.
+ *
+ * Written down because generation is submit-poll-download over minutes, and
+ * quitting halfway would otherwise lose a clip the provider has already been
+ * paid to produce. The operation name is the resume token.
+ */
+export interface StoryJob {
+  id: string
+  boardId: string
+  frameId: string | null
+  kind: JobKind
+  operation: string
+  model: string
+  prompt: string
+  status: JobStatus
+  error: string
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * What a generation run is doing right now, pushed as it changes.
+ *
+ * Export shares this channel — see `RenderProgress`. One channel because there
+ * is one long-running-work indicator in the UI, and two channels would mean two
+ * places to remember to guard on `isDestroyed()`.
+ */
+export type VideoJobProgress =
+  | { phase: 'submitting'; jobId: string; frameId: string }
+  | {
+      phase: 'polling'
+      jobId: string
+      frameId: string
+      /** Seconds spent waiting so far — the only honest progress Veo gives. */
+      elapsedSec: number
+    }
+  | { phase: 'downloading'; jobId: string; frameId: string; index: number }
+  | { phase: 'done'; jobId: string; frameId: string; takes: StoryTake[] }
+  | { phase: 'error'; jobId: string; frameId: string; message: string }
+  | RenderProgress
+
+/**
+ * What one Generate click is allowed to spend.
+ *
+ * `takes` defaults to 1 everywhere. Unlike a token budget this one is
+ * denominated in money the user can see on a bill, so the multiplier is opt-in
+ * per run rather than a setting that quietly triples every future click.
+ */
+export interface TakeGenerateOptions {
+  takes: number
+  aspectRatio: string
+}
+
+export const DEFAULT_ASPECT = '16:9'
+
+/** Ceiling on takes per generation. Three is enough to choose between. */
+export const MAX_TAKES = 3
+
+/* --------------------------------------------------------------- the cut */
+
+/**
+ * The timeline for one board.
+ *
+ * One per board, because a board is one film. Unlike the scene container this
+ * node's position is stored: the container is pinned beside the brief and has
+ * nothing to be arranged against, where the timeline is a thing you put
+ * somewhere in relation to everything else.
+ */
+export interface StoryCut {
+  id: string
+  boardId: string
+  x: number
+  y: number
+  createdAt: string
+}
+
+/**
+ * One piece of the cut: part of one take, at one place in the order.
+ *
+ * `(take, start, end)` rather than a flag on the take, which is what lets one
+ * scene contribute more than once — two of its takes back to back, or the same
+ * take twice at different trims.
+ */
+export interface StoryCutSegment {
+  id: string
+  cutId: string
+  takeId: string
+  startSec: number
+  endSec: number
+  sortIndex: number
+  createdAt: string
+}
+
+/** A segment as the timeline UI edits it, before it has a row. */
+export interface CutSegmentInput {
+  takeId: string
+  startSec: number
+  endSec: number
+}
+
+/**
+ * A cut the AI proposed, with its reasoning attached.
+ *
+ * The reason is shown beside each segment and never written to a row: it is
+ * what the approval is made against, not part of the cut. Same shape of
+ * contract as every other proposal in this app — nothing changes until the
+ * segments are applied.
+ */
+export interface CutProposal {
+  segments: Array<{
+    takeId: string
+    startSec: number
+    endSec: number
+    reason: string
+  }>
+  model: string
+}
+
+/** How an export is going. Shares the job-progress channel with generation. */
+export type RenderProgress =
+  | { phase: 'trimming'; index: number; total: number; fraction: number }
+  | { phase: 'joining'; fraction: number }
+  | { phase: 'exported'; path: string }
+  | { phase: 'renderError'; message: string }
 
 export const isOmniDuration = (value: unknown): value is OmniDuration =>
   (OMNI_DURATIONS as readonly number[]).includes(value as number)
@@ -1438,7 +1671,24 @@ export interface UiPrefs {
    * planner names the scenes it writes, every number on the board disappears.
    */
   sceneNumbers: boolean
+  /**
+   * Whether scenes are rows in one container or cards you position yourself.
+   *
+   * `stack` by default: a board of twelve scenes is a list you read top to
+   * bottom, not twelve rectangles to arrange. The frames keep their `x/y/w/h`
+   * either way — nothing is rewritten by flipping this — so `canvas` restores
+   * the layout you left rather than a re-flow of it.
+   */
+  sceneLayout: SceneLayout
 }
+
+export const SCENE_LAYOUTS = ['stack', 'canvas'] as const
+
+export type SceneLayout = (typeof SCENE_LAYOUTS)[number]
+
+export const isSceneLayout = (value: unknown): value is SceneLayout =>
+  typeof value === 'string' &&
+  (SCENE_LAYOUTS as readonly string[]).includes(value)
 
 /* ------------------------------------------------------ character sheets */
 

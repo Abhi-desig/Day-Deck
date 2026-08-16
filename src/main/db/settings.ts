@@ -1,4 +1,4 @@
-import type { KeySlot, UiPrefs } from '@shared/types'
+import { isSceneLayout, type KeySlot, type UiPrefs } from '@shared/types'
 import type { Db } from './index'
 
 /**
@@ -68,7 +68,9 @@ export const SETTING = {
    */
   theme: 'ui.theme',
   /** Whether storyboard scene cards show their position on the board. */
-  sceneNumbers: 'ui.scene_numbers'
+  sceneNumbers: 'ui.scene_numbers',
+  /** Whether scenes stack into one container or sit as cards on the canvas. */
+  sceneLayout: 'ui.scene_layout'
 } as const
 
 /**
@@ -100,6 +102,14 @@ export function getUiPrefs(db: Db): UiPrefs {
     theme: getSetting(db, SETTING.theme) === 'light' ? 'light' : 'dark',
     // On by default: the number is the only thing telling scene 1 from scene 10
     // once the planner has given every card a name.
-    sceneNumbers: getBool(db, SETTING.sceneNumbers, true)
+    sceneNumbers: getBool(db, SETTING.sceneNumbers, true),
+    // Stacked by default. Arranging rectangles was never the work; reading the
+    // scenes in order is.
+    sceneLayout: readSceneLayout(db)
   }
+}
+
+function readSceneLayout(db: Db): UiPrefs['sceneLayout'] {
+  const raw = getSetting(db, SETTING.sceneLayout)
+  return isSceneLayout(raw) ? raw : 'stack'
 }

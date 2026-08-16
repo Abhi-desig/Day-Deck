@@ -167,6 +167,8 @@ interface FrameRow {
   h: number
   duration_sec: number | null
   color: string
+  is_final: number
+  revision_note: string
   sort_index: number
   created_at: string
 }
@@ -183,6 +185,8 @@ const toFrame = (r: FrameRow): StoryFrame => ({
   h: r.h,
   durationSec: r.duration_sec,
   color: isGoalColor(r.color) ? r.color : 'amber',
+  isFinal: r.is_final === 1,
+  revisionNote: r.revision_note,
   sortIndex: r.sort_index,
   createdAt: r.created_at
 })
@@ -256,6 +260,8 @@ const FRAME_PATCH_COLUMNS: Record<keyof StoryFramePatch, string> = {
   h: 'h',
   durationSec: 'duration_sec',
   color: 'color',
+  isFinal: 'is_final',
+  revisionNote: 'revision_note',
   sortIndex: 'sort_index'
 }
 
@@ -273,7 +279,11 @@ export function updateFrame(
     sets.push(`${column} = ?`)
     // Prompts and descriptions are multi-line, so only the ends are trimmed —
     // the internal shape of a prompt is part of the prompt.
-    values.push(typeof value === 'string' ? value.trim() : value)
+    //
+    // SQLite has no boolean to bind either, so `isFinal` becomes the 0/1 the
+    // column holds. Left alone, better-sqlite3 throws rather than coercing it.
+    if (typeof value === 'boolean') values.push(value ? 1 : 0)
+    else values.push(typeof value === 'string' ? value.trim() : value)
   }
 
   if (sets.length) {

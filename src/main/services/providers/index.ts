@@ -1,10 +1,12 @@
 import {
   PROVIDER_INFO,
   isAiProvider,
+  videoProviders,
   type AiModel,
   type AiProvider,
   type KeySlot,
-  type SlotConfig
+  type SlotConfig,
+  type VideoWire
 } from '@shared/types'
 import type { Db } from '../../db'
 import { getSetting, setSetting, SLOT_SETTING } from '../../db/settings'
@@ -14,6 +16,8 @@ import type { JsonRequest, TextRequest, WireAdapter } from './wire'
 import { anthropicWire } from './anthropic'
 import { geminiWire } from './gemini'
 import { openaiWire } from './openai'
+import { veoVideo } from './veo'
+import type { VideoAdapter } from './video-wire'
 
 /**
  * Which adapter speaks which dialect.
@@ -205,6 +209,43 @@ export function callContext(db: Db, slot: KeySlot): CallContext {
 const adapterFor = (provider: AiProvider): WireAdapter =>
   WIRES[PROVIDER_INFO[provider].wire]
 
+/**
+ * Which adapter makes video, keyed by dialect.
+ *
+ * The video counterpart of `WIRES`, and the reason the video slot is not
+ * hardcoded to Google: pointing the slot at a new provider is a
+ * `PROVIDER_INFO` entry when it speaks a dialect already here, and one new file
+ * beside `veo.ts` when it speaks its own.
+ */
+const VIDEO_WIRE_ADAPTERS: Record<VideoWire, VideoAdapter> = {
+  veo: veoVideo
+}
+
+/**
+ * The adapter for a slot's provider, or a refusal that names the alternatives.
+ *
+ * Most providers in `PROVIDER_INFO` route *language* models and have no video
+ * endpoint at all — OpenRouter, Groq, DeepSeek and the rest. A key that works
+ * perfectly for prompts therefore cannot generate a clip, however it is
+ * configured, and the useful thing to say is which providers can. Left to fail
+ * on the wire this arrives as a 404 about a missing model, which sends people
+ * looking for the wrong problem.
+ */
+export function videoAdapterFor(provider: AiProvider): VideoAdapter {
+  const wire = PROVIDER_INFO[provider].videoWire
+  if (wire) return VIDEO_WIRE_ADAPTERS[wire]
+
+  const able = videoProviders()
+    .map((p) => PROVIDER_INFO[p].label)
+    .join(', ')
+
+  throw new AiError(
+    `${PROVIDER_INFO[provider].label} does not generate video — it routes language models, so a key for it cannot produce a clip however the slot is configured. ` +
+      `Set the video slot to one of: ${able || 'none configured'} — and give that slot its own key, since a key only works with the vendor it came from.`,
+    'config'
+  )
+}
+
 /* ------------------------------------------------------------- the calls */
 
 /**
@@ -228,6 +269,12 @@ export async function listModels(
         apiKey: key.trim()
       }
     : callContext(db, slot)
+
+  // The video slot asks a different question of the same endpoint: not "what
+  // can hold a conversation" but "what can generate a clip this app knows how
+  // to collect". Routed here rather than inside the adapter because it is a
+  // property of the *slot*, and `WireAdapter` deliberately has no video in it.
+  if (slot === 'video') return videoAdapterFor(config.provider).listModels(ctx)
 
   return adapterFor(config.provider).listModels(ctx)
 }

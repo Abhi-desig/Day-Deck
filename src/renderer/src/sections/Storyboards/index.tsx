@@ -18,8 +18,11 @@ import { useIntent } from '../../store/useShell'
 import { usePrefs } from '../../store/usePrefs'
 import { useProjects } from '../../store/useProjects'
 import { useStoryboards } from '../../store/useStoryboards'
+import { useCut } from '../../store/useCut'
 import { useStyles } from '../../store/useStyles'
+import { useTakes } from '../../store/useTakes'
 import { ApprovalWindow } from './ApprovalWindow'
+import { REVISE_EVENT, type ReviseDetail } from './nodes/SceneRow'
 import { Canvas, ZOOM_MAX, ZOOM_MIN, type CanvasHandle } from './Canvas'
 import { FocusMode } from './FocusMode'
 import { PromptWindow } from './PromptWindow'
@@ -59,6 +62,10 @@ export function Storyboards() {
   const [castOpen, setCastOpen] = useState(false)
   const sceneNumbers = usePrefs((s) => s.sceneNumbers)
   const setSceneNumbers = usePrefs((s) => s.setSceneNumbers)
+  const sceneLayout = usePrefs((s) => s.sceneLayout)
+  const setSceneLayout = usePrefs((s) => s.setSceneLayout)
+  const cut = useCut((s) => s.cut)
+  const loadCut = useCut((s) => s.load)
   const [proposal, setProposal] = useState<ScenePlanProposal | null>(null)
   const [planning, setPlanning] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -95,6 +102,57 @@ export function Storyboards() {
     setOfferPrompts(false)
     setPromptProposal(null)
   }, [activeId, loadPlaced])
+
+  // Generation progress is pushed, not polled. Subscribed once for the whole
+  // section, because there is one job at a time across the whole app.
+  useEffect(() => useTakes.getState().listen(), [])
+
+  /**
+   * A row asked for a revision.
+   *
+   * The propose/approve/apply path is deliberately the same one the toolbar's
+   * prompt pass uses — `proposeRevision` comes back as a one-row
+   * `PromptPlanProposal`, so the existing `PromptWindow` renders it and
+   * `applyPrompts` writes it. A revision therefore has no write path of its own
+   * and no second place for the approval rule to be got wrong.
+   */
+  useEffect(() => {
+    function onRevise(event: Event): void {
+      const { frameId, note } = (event as CustomEvent<ReviseDetail>).detail
+      if (planningPrompts) return
+      setPlanningPrompts(true)
+      setPlanError(null)
+      api.storyboards
+        .proposeRevision(frameId, note)
+        .then(setPromptProposal)
+        .catch((err) => setPlanError(errorMessage(err)))
+        .finally(() => setPlanningPrompts(false))
+    }
+
+    window.addEventListener(REVISE_EVENT, onRevise)
+    return () => window.removeEventListener(REVISE_EVENT, onRevise)
+  }, [planningPrompts])
+
+  /**
+   * Put the timeline on the canvas.
+   *
+   * The cut row is created lazily — most boards never reach it, and a
+   * permanently empty timeline node beside every brief says nothing. `move` is
+   * what creates it, because "where it goes" is the first fact there is about a
+   * timeline, and it also makes a second click a harmless re-place.
+   */
+  const openCut = useCallback(async (): Promise<void> => {
+    if (!activeId) return
+    if (!useCut.getState().cut) {
+      await api.cut.move(activeId, 980, -40)
+    }
+    await loadCut(activeId)
+  }, [activeId, loadCut])
+
+  // The cut follows the open board, like placements do.
+  useEffect(() => {
+    if (activeId) void loadCut(activeId)
+  }, [activeId, loadCut])
 
   const newBoardIntent = useIntent('newBoard')
   useEffect(() => {
@@ -239,6 +297,43 @@ export function Storyboards() {
               )}
             >
               1·2·3
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                void setSceneLayout(
+                  sceneLayout === 'stack' ? 'canvas' : 'stack'
+                )
+              }
+              aria-pressed={sceneLayout === 'stack'}
+              title={
+                sceneLayout === 'stack'
+                  ? 'Spread the scenes back out as cards you position yourself'
+                  : 'Collect every scene into one box, wired to the brief'
+              }
+              className={cn(
+                'rounded-md border px-2 py-1 text-[11.5px] transition-colors',
+                sceneLayout === 'stack'
+                  ? 'border-line bg-raised text-ink'
+                  : 'border-line-soft text-ink-faint hover:border-line hover:text-ink-dim'
+              )}
+            >
+              {sceneLayout === 'stack' ? 'Stacked' : 'Spread'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void openCut()}
+              title="Assemble the final shots into a cut, and export it"
+              className={cn(
+                'rounded-md border px-2.5 py-1 text-[11.5px] transition-colors',
+                cut
+                  ? 'border-line bg-raised text-ink'
+                  : 'border-line-soft text-ink-dim hover:border-line hover:text-ink'
+              )}
+            >
+              Cut
             </button>
 
             <button

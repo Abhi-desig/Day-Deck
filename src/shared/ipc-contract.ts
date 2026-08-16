@@ -75,14 +75,22 @@ import type {
   StoryListPatch,
   StorySheet,
   StorySheetPatch,
+  CutProposal,
+  StoryCut,
+  StoryCutSegment,
+  CutSegmentInput,
   StoryStyleNode,
+  StoryTake,
   SubdivideResult,
+  TakeGenerateOptions,
   Tag,
   TagOrigin,
   TagPatch,
+  SceneLayout,
   ThemeName,
   TrackerWeek,
   UiPrefs,
+  VideoJobProgress,
   VideoStyle,
   VideoStylePatch,
   WeeklyTemplate
@@ -205,6 +213,41 @@ export const IPC = {
   boardsPlanPrompts: 'boards:planPrompts',
   /** Writes the approved prompts — the prompt column only. */
   boardsApplyPromptPlan: 'boards:applyPromptPlan',
+  /** Rewrites one scene's prompt to a note. Writes nothing; applies through
+      `boardsApplyPromptPlan`, so a revision has no write path of its own. */
+  boardsProposeRevision: 'boards:proposeRevision',
+  /**
+   * Generation progress, pushed rather than invoked.
+   *
+   * The first push channel Storyboards has. Necessary because a Veo job is
+   * minutes of waiting with nothing to show, and a spinner that cannot say
+   * "still queued" versus "downloading take 2 of 3" is a spinner people quit
+   * the app during.
+   */
+  boardsJobProgress: 'boards:jobProgress',
+
+  takesList: 'takes:list',
+  /** Metered: submits, waits, downloads. One in flight across the whole app. */
+  takesGenerate: 'takes:generate',
+  /** What a run would cost, so the confirmation can say it in numbers. */
+  takesPlan: 'takes:plan',
+  takesChoose: 'takes:choose',
+  takesDelete: 'takes:delete',
+  /** The gate on what flows into the cut. */
+  framesSetFinal: 'frames:setFinal',
+
+  cutGet: 'cut:get',
+  cutMove: 'cut:move',
+  /** Replaces the whole segment list — reorder, trim and remove are all this. */
+  cutSetSegments: 'cut:setSegments',
+  /** One segment per final scene's chosen take, full length. */
+  cutPopulate: 'cut:populate',
+  /** Real clip lengths, read off the files rather than the rows. */
+  cutMeasure: 'cut:measure',
+  /** Opens the save dialog and renders. Progress on `boardsJobProgress`. */
+  cutExport: 'cut:export',
+  /** Uploads the named clips, asks for cut points, writes nothing. */
+  cutPropose: 'cut:propose',
 
   notifyGetPrefs: 'notify:getPrefs',
   notifySetPrefs: 'notify:setPrefs',
@@ -240,6 +283,7 @@ export const IPC = {
   settingsGetPrefs: 'settings:getPrefs',
   settingsSetTheme: 'settings:setTheme',
   settingsSetSceneNumbers: 'settings:setSceneNumbers',
+  settingsSetSceneLayout: 'settings:setSceneLayout',
   /** One slot's provider, asked live. Never a hardcoded list. */
   aiModels: 'ai:models',
 
@@ -501,6 +545,82 @@ export interface DeckApi {
       boardId: string,
       applies: PromptApply[]
     ): Promise<StoryFrame[]>
+
+    /**
+     * Rewrite one scene's prompt to a note, in the user's own words.
+     *
+     * Comes back as a one-row `PromptPlanProposal` on purpose: applying it goes
+     * through `applyPromptPlan` like any other prompt change, so a revision
+     * introduces no second write path and the diff window renders it unchanged.
+     */
+    proposeRevision(
+      frameId: string,
+      note: string
+    ): Promise<PromptPlanProposal>
+
+    /** Whether this shot is settled, and so flows into the cut. */
+    setFinal(frameId: string, isFinal: boolean): Promise<StoryFrame>
+  }
+
+  /**
+   * Generated clips.
+   *
+   * The only surface in the app that can spend money on a click, which is why
+   * `plan` exists beside `generate`: the confirmation states the clip count and
+   * total seconds before anything is submitted.
+   */
+  takes: {
+    list(frameId: string): Promise<StoryTake[]>
+    /** What generating for these scenes would cost. Submits nothing. */
+    plan(
+      frameIds: string[],
+      takes: number
+    ): Promise<{ scenes: number; clips: number; seconds: number }>
+    /** Submits, waits and downloads. Progress arrives on `onProgress`. */
+    generate(
+      frameId: string,
+      options: Partial<TakeGenerateOptions>
+    ): Promise<StoryTake[]>
+    /** Which take this scene contributes to the cut. */
+    choose(takeId: string): Promise<StoryTake | null>
+    /** Deletes the row and unlinks its file. */
+    remove(takeId: string): Promise<void>
+    /** Returns an unsubscribe function, like the curriculum's. */
+    onProgress(handler: (update: VideoJobProgress) => void): () => void
+  }
+
+  /**
+   * The cut: one timeline per board, made of trimmed segments.
+   *
+   * A segment is `(take, start, end)`, so one scene can contribute more than
+   * once — which is why `setSegments` replaces the list rather than patching
+   * it. Reordering, trimming and removing are all edits to the list.
+   */
+  cut: {
+    get(boardId: string): Promise<{
+      cut: StoryCut | null
+      segments: StoryCutSegment[]
+    }>
+    move(boardId: string, x: number, y: number): Promise<void>
+    setSegments(
+      boardId: string,
+      segments: CutSegmentInput[]
+    ): Promise<StoryCutSegment[]>
+    populate(boardId: string): Promise<StoryCutSegment[]>
+    /** Take id to real length in seconds. Missing means "keep the stored one". */
+    measure(boardId: string): Promise<Record<string, number>>
+    /** Opens the save dialog. null means the user cancelled. */
+    export(boardId: string): Promise<string | null>
+
+    /**
+     * Let the model watch the named clips and propose where to cut them.
+     *
+     * Writes nothing. The proposal comes back with a reason per segment, and
+     * `setSegments` is what writes it if the user approves — so an AI cut is
+     * not a second way to modify the timeline, it is the same way reached by a
+     * different route.
+     */
+    propose(boardId: string, takeIds: string[]): Promise<CutProposal>
   }
 
   /**
@@ -587,6 +707,7 @@ export interface DeckApi {
     prefs(): Promise<UiPrefs>
     setTheme(theme: ThemeName): Promise<ThemeName>
     setSceneNumbers(on: boolean): Promise<boolean>
+    setSceneLayout(layout: SceneLayout): Promise<SceneLayout>
   }
   projects: {
     list(): Promise<Project[]>

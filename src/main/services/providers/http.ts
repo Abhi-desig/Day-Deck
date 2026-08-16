@@ -14,6 +14,7 @@ export type AiErrorKind =
   | 'offline'
   | 'auth'
   | 'rate'
+  | 'credit'
   | 'server'
   | 'truncated'
   | 'parse'
@@ -24,7 +25,13 @@ export class AiError extends Error {
   constructor(
     message: string,
     readonly kind: AiErrorKind,
-    readonly status?: number
+    readonly status?: number,
+    /**
+     * On a credit refusal that named a number: the output ceiling the balance
+     * still covers. The adapter uses it to ask for less rather than to fail —
+     * see `affordableCeiling`.
+     */
+    readonly affordable?: number
   ) {
     super(message)
     this.name = 'AiError'
@@ -65,6 +72,23 @@ export interface RequestOptions {
   timeoutMs?: number
   /** Retries only apply to transient failures (429 and 5xx). */
   attempts?: number
+  /**
+   * An absolute URL instead of a path on the context's base.
+   *
+   * Long-running operations hand back a download URI on a host of the
+   * provider's choosing, which is not something an adapter can express as a
+   * path. Nothing else needs it, and it stays inside this file so the rule that
+   * matters — one place opens a socket — still holds.
+   */
+  absolute?: boolean
+  /**
+   * A body to send as-is, instead of JSON.
+   *
+   * Only file uploads need this. When set, `body` is ignored and no
+   * `content-type` is added — the caller states it, because for an upload the
+   * content type is the file's, not `application/json`.
+   */
+  raw?: Buffer
 }
 
 /** 1s, 3s — a blip either clears on its own that fast or is not a blip. */
@@ -118,6 +142,55 @@ function isAuthFailure(status: number, detail: string): boolean {
     detail
   )
 }
+
+/**
+ * A refusal about money rather than about the request.
+ *
+ * 402 is the honest status and the credit-metered gateways use it. OpenAI says
+ * 429 with `insufficient_quota` and Anthropic says 400 with "credit balance is
+ * too low" — the same condition wearing a status that means something else
+ * entirely. Left unclassified, the first is retried three times against a
+ * balance that cannot pay for any of them, and the second is fed to a retreat
+ * loop that drops one optional field after another looking for the one at
+ * fault. Neither heals by trying again, so both stop here.
+ */
+function isCreditFailure(status: number, detail: string): boolean {
+  if (status === 402) return true
+  if (status !== 400 && status !== 429) return false
+  return /insufficient[_ ]quota|credit balance is too low|exceeded your current quota|requires more credits|more credits|purchase credits|billing details/i.test(
+    detail
+  )
+}
+
+/**
+ * The output ceiling a balance still covers, when the refusal names one.
+ *
+ * This is the number that makes a credit refusal recoverable instead of fatal.
+ * A request reserves its *whole* stated output ceiling up front — the provider
+ * holds the worst case, not the eventual bill — so an account with a little
+ * credit left refuses a call whose answer would have been a fraction of what
+ * was reserved. Reading the affordable figure back out lets the adapter re-ask
+ * for exactly what the balance covers rather than reporting a failure the user
+ * cannot act on except by paying.
+ */
+export function affordableTokens(detail: string): number | null {
+  const match = /can only afford\s+([\d,]+)/i.exec(detail)
+  if (!match) return null
+  const tokens = Number(match[1].replace(/,/g, ''))
+  return Number.isFinite(tokens) && tokens > 0 ? tokens : null
+}
+
+/**
+ * Why a call nobody would call large was refused as too large.
+ *
+ * The reservation is the part that is not obvious and is the whole of the
+ * confusion: the request was refused for what it *might* have produced, not for
+ * what it asked or what it would have cost.
+ */
+const creditMessage = (ctx: CallContext, detail: string): string =>
+  `${ctx.label} refused this on credit, not on content: ${sentence(detail)} ` +
+  'Every call reserves its whole output ceiling up front, so a thin balance turns down requests whose answers would have fitted several times over. ' +
+  `Add credit to the ${ctx.label} account, or point that slot at a cheaper model in Settings — the same balance buys far more tokens from a smaller model.`
 
 /**
  * Said in full because this is the message that has already cost the user an
@@ -174,8 +247,75 @@ export function askedToWaitMs(
 export async function request(
   ctx: CallContext,
   path: string,
-  { method = 'GET', body, headers = {}, timeoutMs = 30_000, attempts = 3 }: RequestOptions = {}
+  options: RequestOptions = {}
 ): Promise<unknown> {
+  const response = await send(ctx, path, options)
+  return response.json()
+}
+
+/**
+ * The same call, for a response that is bytes rather than JSON.
+ *
+ * A sibling of `request` rather than a flag on it, because `request` is JSON at
+ * both ends by construction — it stringifies every body and returns
+ * `response.json()`. What the two genuinely share is everything above the last
+ * line: the timeout, what counts as a rejected key, what is worth retrying and
+ * how long to ride out an overloaded model. That is `send`, and it is why a
+ * downloaded clip gets the same error messages as a refused prompt instead of a
+ * second, worse copy of them.
+ */
+export async function requestBinary(
+  ctx: CallContext,
+  path: string,
+  options: RequestOptions = {}
+): Promise<Buffer> {
+  const response = await send(ctx, path, {
+    // Minutes, not seconds: this is a video file, and the default 30s ceiling
+    // would abort a download that was progressing perfectly well.
+    timeoutMs: 300_000,
+    ...options,
+    headers: { accept: '*/*', ...options.headers }
+  })
+  return Buffer.from(await response.arrayBuffer())
+}
+
+/**
+ * A call whose *headers* are the answer.
+ *
+ * The resumable-upload handshake replies with the upload URL in a header and an
+ * empty body, so `request` — which parses the body as JSON — cannot express it.
+ * Returns both, and leaves reading them to the one adapter that cares.
+ */
+export async function requestWithHeaders(
+  ctx: CallContext,
+  path: string,
+  options: RequestOptions = {}
+): Promise<{ headers: Headers; json: unknown }> {
+  const response = await send(ctx, path, options)
+  const text = await response.text()
+  let json: unknown = null
+  try {
+    json = text ? JSON.parse(text) : null
+  } catch {
+    // An empty or non-JSON body is normal for a handshake response; the
+    // headers are what the caller came for.
+  }
+  return { headers: response.headers, json }
+}
+
+async function send(
+  ctx: CallContext,
+  path: string,
+  {
+    method = 'GET',
+    body,
+    headers = {},
+    timeoutMs = 30_000,
+    attempts = 3,
+    absolute = false,
+    raw
+  }: RequestOptions = {}
+): Promise<Response> {
   let waitMs = 0
   /**
    * Two counts, because the two waits are not the same kind of wait. `retries`
@@ -192,13 +332,13 @@ export async function request(
 
     let response: Response
     try {
-      response = await fetch(`${ctx.baseUrl}${path}`, {
+      response = await fetch(absolute ? path : `${ctx.baseUrl}${path}`, {
         method,
         headers: {
           ...headers,
-          ...(body ? { 'content-type': 'application/json' } : {})
+          ...(body && !raw ? { 'content-type': 'application/json' } : {})
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body: raw ?? (body ? JSON.stringify(body) : undefined),
         signal: AbortSignal.timeout(timeoutMs)
       })
     } catch (err) {
@@ -206,7 +346,7 @@ export async function request(
       throw classifyNetworkError(err, ctx)
     }
 
-    if (response.ok) return response.json()
+    if (response.ok) return response
 
     const detail = await response.text().catch(() => '')
 
@@ -215,6 +355,16 @@ export async function request(
         `${ctx.label} rejected the API key: ${sentence(detail)} Check the key — and check that the provider beside it in Settings is the one the key came from, because a key from one vendor is always rejected by another.`,
         'auth',
         response.status
+      )
+    }
+    // Before the 400 and 429 branches: this arrives wearing all three statuses,
+    // and the other two would retry or retreat on a refusal that is neither.
+    if (isCreditFailure(response.status, detail)) {
+      throw new AiError(
+        creditMessage(ctx, detail),
+        'credit',
+        response.status,
+        affordableTokens(detail) ?? undefined
       )
     }
     if (response.status === 404) {

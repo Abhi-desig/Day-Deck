@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ThemeName, UiPrefs } from '@shared/types'
+import type { SceneLayout, ThemeName, UiPrefs } from '@shared/types'
 import { api } from '../lib/api'
 
 /**
@@ -48,11 +48,13 @@ interface PrefsState extends UiPrefs {
   load(): Promise<void>
   setTheme(theme: ThemeName): Promise<void>
   setSceneNumbers(on: boolean): Promise<void>
+  setSceneLayout(layout: SceneLayout): Promise<void>
 }
 
 export const usePrefs = create<PrefsState>((set, get) => ({
   theme: 'dark',
   sceneNumbers: true,
+  sceneLayout: 'stack',
 
   async load() {
     try {
@@ -87,6 +89,16 @@ export const usePrefs = create<PrefsState>((set, get) => ({
       await api.settings.setSceneNumbers(on)
     } catch {
       set({ sceneNumbers: previous })
+    }
+  },
+
+  async setSceneLayout(layout) {
+    const previous = get().sceneLayout
+    set({ sceneLayout: layout })
+    try {
+      await api.settings.setSceneLayout(layout)
+    } catch {
+      set({ sceneLayout: previous })
     }
   }
 }))

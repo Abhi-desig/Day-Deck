@@ -1,8 +1,10 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, session, shell } from 'electron'
-import { WINDOW_BACKGROUND } from '@shared/types'
+import { IPC } from '@shared/ipc-contract'
+import { WINDOW_BACKGROUND, type VideoJobProgress } from '@shared/types'
 import { closeDb, getDb } from './db'
 import { getUiPrefs } from './db/settings'
+import { failOrphanedJobs } from './db/takes'
 import { registerIpc } from './ipc'
 import { bindPtyLifecycle } from './ipc/workspace'
 import {
@@ -11,6 +13,8 @@ import {
 } from './services/media'
 import { killAll as killAllTerminals } from './services/pty'
 import { startReminders, type Reminders } from './services/reminders'
+import { sweepOrphanedTakes } from './services/takes'
+import { resumeJobs } from './services/video'
 
 let mainWindow: BrowserWindow | null = null
 let reminders: Reminders | null = null
@@ -180,11 +184,48 @@ if (!app.requestSingleInstanceLock()) {
     registerMediaProtocol()
     createWindow()
     reminders = startReminders(getDb(), focusWindow)
+    recoverVideoJobs()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   })
+
+  /**
+   * Pick generation back up where a quit left it.
+   *
+   * Three things, in this order and all after the window exists so progress has
+   * somewhere to land. None of them may throw: a launch that fails because a
+   * clip from last week could not be tidied up is a far worse outcome than the
+   * clip staying untidy.
+   *
+   * The sweep is the one that is easy to skip and should not be. `ON DELETE
+   * CASCADE` removes take rows when a board goes, and SQLite cannot delete
+   * files — so without this, deleting a board silently leaks every clip it
+   * generated, which for video is gigabytes nothing will ever mention again.
+   */
+  function recoverVideoJobs(): void {
+    try {
+      const db = getDb()
+      // A job that never recorded an operation cannot be resumed, and leaving
+      // it `running` would block every future generation on the in-flight check.
+      failOrphanedJobs(db)
+      sweepOrphanedTakes(db)
+
+      const send = (update: VideoJobProgress): void => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.webContents.isDestroyed()) {
+            win.webContents.send(IPC.boardsJobProgress, update)
+          }
+        }
+      }
+      void resumeJobs(db, send).catch(() => {
+        /* recorded on the job row; nothing more to do here */
+      })
+    } catch {
+      /* recovery is best-effort and must never stop a launch */
+    }
+  }
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()

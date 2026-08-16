@@ -4,6 +4,7 @@ import { net, protocol } from 'electron'
 import { MEDIA_SCHEME } from '@shared/types'
 import { getDb } from '../db'
 import { itemMediaPath } from '../db/storyboards'
+import { takePath } from './takes'
 
 /**
  * Serving reference media the app links but does not own.
@@ -50,13 +51,19 @@ export function registerMediaScheme(): void {
 }
 
 /**
- * `deck-media://item/<id>` — the only shape this scheme answers.
+ * What this scheme answers: `deck-media://item/<id>` and `deck-media://take/<id>`.
+ *
+ * Two hosts, one rule. An item is media the user linked and the app looks its
+ * path up; a take is a clip the app generated and owns, whose path is derived
+ * from the id rather than stored anywhere. Neither URL contains a path.
  *
  * Exported for its tests. This is the whole security boundary of the scheme, so
  * it is worth asserting on directly rather than through a protocol handler that
  * needs a running Electron to exercise.
  */
-export function itemIdFrom(url: string): string | null {
+export type MediaRef = { host: 'item' | 'take'; id: string }
+
+export function mediaRefFrom(url: string): MediaRef | null {
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -64,7 +71,7 @@ export function itemIdFrom(url: string): string | null {
     return null
   }
   if (parsed.protocol !== `${MEDIA_SCHEME}:`) return null
-  if (parsed.host !== 'item') return null
+  if (parsed.host !== 'item' && parsed.host !== 'take') return null
 
   const id = decodeURIComponent(parsed.pathname.replace(/^\/+/, ''))
   // Ids are uuids from randomUUID. Anything with a separator in it is not an id
@@ -72,17 +79,25 @@ export function itemIdFrom(url: string): string | null {
   if (!id || id.includes('/') || id.includes('\\') || id.includes('..')) {
     return null
   }
-  return id
+  return { host: parsed.host, id }
+}
+
+/** The original single-host reader, kept because it is what the item path means. */
+export function itemIdFrom(url: string): string | null {
+  const ref = mediaRefFrom(url)
+  return ref?.host === 'item' ? ref.id : null
 }
 
 export function registerMediaProtocol(): void {
   protocol.handle(MEDIA_SCHEME, async (request) => {
-    const id = itemIdFrom(request.url)
-    if (!id) return new Response(null, { status: 400 })
+    const ref = mediaRefFrom(request.url)
+    if (!ref) return new Response(null, { status: 400 })
+
+    if (ref.host === 'take') return serveTake(ref.id)
 
     let media: { path: string; kind: string | null } | null
     try {
-      media = itemMediaPath(getDb(), id)
+      media = itemMediaPath(getDb(), ref.id)
     } catch {
       return new Response(null, { status: 500 })
     }
@@ -104,5 +119,24 @@ export function registerMediaProtocol(): void {
     return net.fetch(pathToFileURL(media.path).toString(), {
       bypassCustomProtocolHandlers: true
     })
+  })
+}
+
+/**
+ * A generated clip.
+ *
+ * No database lookup at all: the path is `<takesDir>/<id>.mp4` by construction,
+ * so an id that names no take simply is not a file and 404s. Same `net.fetch`,
+ * so `<video>` gets Range handling and seeking for free.
+ */
+async function serveTake(id: string): Promise<Response> {
+  const path = takePath(id)
+  try {
+    if (!statSync(path).isFile()) return new Response(null, { status: 404 })
+  } catch {
+    return new Response(null, { status: 404 })
+  }
+  return net.fetch(pathToFileURL(path).toString(), {
+    bypassCustomProtocolHandlers: true
   })
 }

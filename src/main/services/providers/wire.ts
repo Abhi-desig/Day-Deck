@@ -44,6 +44,17 @@ export interface JsonRequest {
   timeoutMs: number
   /** Caps thinking and answer together. Never below the answer plus thinking. */
   output: number
+  /**
+   * The smallest ceiling this job can still be answered under.
+   *
+   * `output` is a generous worst case, which is the right thing to reserve and
+   * the wrong thing to insist on: a provider that meters credit holds the whole
+   * ceiling before it runs anything, so an account with a little left refuses a
+   * call whose answer would have used a fraction of it. This is the number that
+   * says how far the ask may be cut to fit — below it the answer would arrive
+   * truncated, which fails the job anyway and more confusingly.
+   */
+  minOutput: number
   thinking: number
 }
 
@@ -54,6 +65,27 @@ export interface TextRequest {
   question: string
   timeoutMs: number
   output: number
+  /** As `JsonRequest.minOutput`. Prose survives a trim better than JSON does. */
+  minOutput: number
+}
+
+/**
+ * What to re-ask for after a credit refusal, or null to give up.
+ *
+ * Three ways this is not a retry. It only fires when the provider named a
+ * figure, so the new ask is known to fit rather than guessed at. It only fires
+ * when that figure is strictly smaller, so a chain of these terminates. And it
+ * refuses to drop below the caller's floor, because an answer cut off halfway
+ * is not a cheaper success — it is the same failure with a worse explanation.
+ */
+export function affordableCeiling(
+  err: AiError,
+  ceiling: number,
+  floor: number
+): number | null {
+  const affordable = err.affordable
+  if (affordable === undefined || affordable >= ceiling) return null
+  return affordable >= floor ? affordable : null
 }
 
 /**
@@ -140,3 +172,27 @@ export function guardTruncation(
 /** Models that exist but cannot do what Day Deck needs. */
 export const NON_TEXT =
   /embedding|embed|aqa|imagen|veo|tts|whisper|dall-e|dalle|moderation|rerank|guard|computer-use|live|audio|image|video|vision-encoder|transcribe|realtime/i
+
+/**
+ * The models the video slot may be pointed at.
+ *
+ * An allowlist rather than the inverse of `NON_TEXT`, and the two do not meet:
+ * `NON_TEXT` answers "can this model hold a conversation", which every text
+ * picker asks, and this answers "can this model make a clip Day Deck knows how
+ * to collect". A model that fails both questions — an embedder, say — must not
+ * fall into the video picker just because it was excluded from the text one.
+ *
+ * Veo only, today. The generate/poll/download shape in `veo.ts` is Google's, so
+ * offering anything else here would be offering a button that cannot work.
+ */
+export const VIDEO_MODELS = /veo/i
+
+/**
+ * Models that generate but cannot be *asked* for, on this wire.
+ *
+ * The `-generate-preview`-style aliases are real model ids that the list
+ * endpoint returns and `predictLongRunning` refuses, which reads as a broken
+ * button rather than as a model that was never usable.
+ */
+export const isVideoModel = (id: string): boolean =>
+  VIDEO_MODELS.test(id) && !/embed|upscale/i.test(id)

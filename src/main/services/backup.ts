@@ -22,7 +22,7 @@ import { MIGRATIONS } from '../db/migrations'
  * Tables in dependency order: parents before children, so the inserts satisfy
  * every foreign key without having to defer constraint checking.
  */
-const TABLES = [
+export const TABLES = [
   'settings',
   'projects',
   'curricula',
@@ -42,6 +42,14 @@ const TABLES = [
   'storyboard_list_items',
   // The cast: board-scoped, so it only has to follow storyboards.
   'storyboard_sheets',
+  // Generation jobs reference a board and a frame, so both come first.
+  'storyboard_jobs',
+  // And a take references a frame and the job that produced it.
+  'storyboard_takes',
+  // The cut hangs off a board…
+  'storyboard_cuts',
+  // …and its segments off the cut and the takes, so both come first.
+  'storyboard_cut_segments',
   // Wires last of the storyboard group: it references frames and items both.
   'storyboard_frame_refs',
   // Same, for the refs wired to the brief rather than to one scene.
