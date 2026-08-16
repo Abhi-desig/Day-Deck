@@ -196,4 +196,52 @@ async function generateText(
   return extractText(payload, ctx, 'prose')
 }
 
+/**
+ * One structured-JSON call that has clips to watch as well as text to read.
+ *
+ * Separate from `generateJson` rather than an option on it, because it is the
+ * one call in the app whose parts are not all text — and `WireAdapter` should
+ * not grow a `files` parameter that two of its three implementations would have
+ * to refuse. Video-in is Google's, so it lives in Google's adapter.
+ *
+ * No retreat loop: the surfaces that accept `file_data` are new enough to
+ * accept `responseJsonSchema` and `thinkingConfig` too, so the two round trips
+ * `generateJson` spends learning that would be spent for nothing here.
+ */
+export async function generateJsonWithFiles(
+  ctx: CallContext,
+  req: JsonRequest,
+  files: readonly { uri: string; mimeType: string }[]
+): Promise<string> {
+  const parts = [
+    ...files.map((file) => ({
+      file_data: { file_uri: file.uri, mime_type: file.mimeType }
+    })),
+    { text: req.prompt }
+  ]
+
+  return extractText(
+    await request(
+      ctx,
+      `/models/${encodeURIComponent(req.model)}:generateContent`,
+      {
+        method: 'POST',
+        headers: authHeaders(ctx),
+        timeoutMs: req.timeoutMs,
+        body: {
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2,
+            maxOutputTokens: req.output,
+            thinkingConfig: { thinkingBudget: req.thinking },
+            responseJsonSchema: req.schema
+          }
+        }
+      }
+    ),
+    ctx
+  )
+}
+
 export const geminiWire: WireAdapter = { listModels, generateJson, generateText }

@@ -48,3 +48,30 @@ for (const dir of searchDirs) {
 if (fixed.length > 0) {
   console.log(`node-pty: made ${fixed.length} spawn-helper binary(s) executable`)
 }
+
+/**
+ * The same trap, for ffmpeg.
+ *
+ * ffmpeg-static's install script chmods its own download, so this is belt and
+ * braces — but it costs one stat and covers the case where the script was
+ * skipped and the binary restored from a cache, which pnpm's
+ * content-addressable store does not preserve modes through.
+ */
+const mediaBinaries = []
+
+for (const [pkg, resolve] of [['ffmpeg-static', (m) => m]]) {
+  try {
+    const path = resolve(require(pkg))
+    if (typeof path !== 'string' || !existsSync(path)) continue
+    if (statSync(path).mode & 0o111) continue
+    chmodSync(path, 0o755)
+    mediaBinaries.push(path)
+  } catch {
+    // Not installed, or the package changed shape. Neither is this script's
+    // business to fail an install over.
+  }
+}
+
+if (mediaBinaries.length > 0) {
+  console.log(`media: made ${mediaBinaries.length} binary(s) executable`)
+}

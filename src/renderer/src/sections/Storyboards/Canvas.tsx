@@ -29,12 +29,17 @@ import {
 } from '@shared/types'
 import { api } from '../../lib/api'
 import { buildBoardEdges, buildBoardNodes } from '../../lib/board-graph'
+import { useCut } from '../../store/useCut'
+import { usePrefs } from '../../store/usePrefs'
 import { useStoryboards } from '../../store/useStoryboards'
 import { useStyles } from '../../store/useStyles'
+import { useTakes } from '../../store/useTakes'
 import { BriefNode } from './nodes/BriefNode'
 import { ListNode, LIST_MIN_H, LIST_MIN_W } from './nodes/ListNode'
+import { SceneGroupNode } from './nodes/SceneGroupNode'
 import { SceneNode } from './nodes/SceneNode'
 import { StyleNode, STYLE_W } from './nodes/StyleNode'
+import { TimelineNode } from './nodes/TimelineNode'
 import {
   HANDLE,
   STYLE_DRAG_TYPE,
@@ -64,9 +69,11 @@ export interface CanvasHandle {
     node if this object's identity changes between renders. */
 const NODE_TYPES = {
   brief: BriefNode,
+  group: SceneGroupNode,
   list: ListNode,
   scene: SceneNode,
-  style: StyleNode
+  style: StyleNode,
+  timeline: TimelineNode
 }
 
 /**
@@ -139,6 +146,17 @@ function Graph({
   const moveStyle = useStyles((s) => s.move)
   const unplaceStyle = useStyles((s) => s.unplace)
 
+  const sceneLayout = usePrefs((s) => s.sceneLayout)
+  const cut = useCut((s) => s.cut)
+  const takesByFrame = useTakes((s) => s.byFrame)
+
+  // The timeline draws its clips from every take on the board. Flattened here
+  // rather than in the node so the pure builder still receives plain data.
+  const takes = useMemo(
+    () => frames.flatMap((frame) => takesByFrame[frame.id] ?? []),
+    [frames, takesByFrame]
+  )
+
   const flow = useReactFlow<BoardNode, Edge>()
 
   /* ------------------------------------------------- store -> graph */
@@ -156,15 +174,39 @@ function Graph({
         refs,
         briefRefs,
         placedStyles,
-        styleLibrary
+        styleLibrary,
+        sceneLayout,
+        cut,
+        takes
       }),
-    [board, frames, lists, items, refs, briefRefs, placedStyles, styleLibrary]
+    [
+      board,
+      frames,
+      lists,
+      items,
+      refs,
+      briefRefs,
+      placedStyles,
+      styleLibrary,
+      sceneLayout,
+      cut,
+      takes
+    ]
   )
 
   const derivedEdges = useMemo<Edge[]>(
     () =>
-      buildBoardEdges({ board, frames, items, refs, briefRefs, placedStyles }),
-    [board, frames, items, refs, briefRefs, placedStyles]
+      buildBoardEdges({
+        board,
+        frames,
+        items,
+        refs,
+        briefRefs,
+        placedStyles,
+        sceneLayout,
+        cut
+      }),
+    [board, frames, items, refs, briefRefs, placedStyles, sceneLayout, cut]
   )
 
   const [nodes, setNodes, onNodesChange] = useNodesState<BoardNode>(derivedNodes)
@@ -207,6 +249,8 @@ function Graph({
       if (node.type === 'scene') void placeFrame(id, rect)
       if (node.type === 'list') void placeList(id, rect)
       if (node.type === 'style') void moveStyle(id, rect.x, rect.y)
+      // The timeline is the one node whose position the cut table stores.
+      if (node.type === 'timeline') void api.cut.move(id, rect.x, rect.y)
     },
     [placeFrame, placeList, moveStyle]
   )
@@ -223,6 +267,12 @@ function Graph({
     (connection) =>
       nodeKind(connection.source) === 'list' &&
       (nodeKind(connection.target) === 'scene' ||
+        // Stacked, the scene is a row inside the container and its handle id is
+        // the frame id. The spine's own inbound handle is refused here, or the
+        // whole board's references would pile onto the container's top edge.
+        (nodeKind(connection.target) === 'group' &&
+          !!connection.targetHandle &&
+          connection.targetHandle !== HANDLE.groupBriefIn) ||
         (nodeKind(connection.target) === 'brief' &&
           connection.targetHandle === HANDLE.briefRefIn)),
     []
@@ -234,6 +284,14 @@ function Graph({
       // The source handle *is* the item id — see ListNode's Row.
       if (nodeKind(connection.target) === 'scene') {
         void connectRef(entityId(connection.target), connection.sourceHandle)
+      }
+      // …and on the container, the *target* handle is the frame id.
+      if (
+        nodeKind(connection.target) === 'group' &&
+        connection.targetHandle &&
+        connection.targetHandle !== HANDLE.groupBriefIn
+      ) {
+        void connectRef(connection.targetHandle, connection.sourceHandle)
       }
       if (
         nodeKind(connection.target) === 'brief' &&
@@ -393,8 +451,17 @@ function Graph({
       onConnect={onConnect}
       isValidConnection={isValidConnection}
       onMove={(_e, viewport) => onZoom(viewport.zoom)}
-      onNodeDoubleClick={(_e, node) => {
+      onNodeDoubleClick={(event, node) => {
         if (node.type === 'scene') onFocusScene(entityId(node.id))
+        // The container is one node, so which scene was double-clicked can only
+        // be answered by the DOM — every row stamps its frame id, the same way
+        // a list card stamps `data-list-id` for the drop handler.
+        if (node.type === 'group') {
+          const frameId = (event.target as HTMLElement)
+            .closest('[data-scene-id]')
+            ?.getAttribute('data-scene-id')
+          if (frameId) onFocusScene(frameId)
+        }
       }}
       // dragover must preventDefault or drop never fires at all. Two payloads
       // land here: a style chip from the panel, and files from the Finder.

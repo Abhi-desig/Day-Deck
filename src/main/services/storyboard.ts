@@ -1,23 +1,35 @@
 import type {
+  CutProposal,
+  CutSegmentInput,
   PromptApply,
   PromptPlanProposal,
   SceneApply,
   ScenePlanProposal,
+  StoryCutSegment,
   StoryFrame,
   StoryListItem
 } from '@shared/types'
 import { FRAME_H, FRAME_W } from '@shared/types'
 import type { Db } from '../db'
+import { replaceSegments } from '../db/cut'
 import * as boards from '../db/storyboards'
 import * as styles from '../db/styles'
 import {
+  planCut,
   planPrompts as askForPrompts,
   planScenes as askForScenes,
+  reviseScenePrompt,
   sortStyleText,
+  type CutClip,
   type SheetLine,
   type StyleSortResult
 } from './ai'
+import { chosenTake, getTake } from '../db/takes'
+import { callContext } from './providers'
+import { deleteFile, uploadFile } from './providers/files'
 import { borrowedModel } from './providers/model'
+import { measureTakes } from './render'
+import { takePath } from './takes'
 
 /**
  * Turning a brief into scenes, in two separate operations.
@@ -220,11 +232,22 @@ export function apply(
 /**
  * Scenes per prompt-writing call.
  *
- * Matches the SUBDIVIDE_BATCH precedent: one giant call is far more likely to
- * hit the output limit and fail the whole board, and batches run sequentially
- * so a board of forty scenes never fans out into parallel requests.
+ * Four, down from fifteen. One giant call is more likely to hit the output
+ * limit and fail the whole board, and batches run sequentially so a board of
+ * forty scenes never fans out into parallel requests — that was always the
+ * reasoning, and a credit-metered provider sharpened it into a hard one.
+ *
+ * Such a provider reserves the request's whole output ceiling before it runs
+ * anything, so the size of the batch, not the size of the answer, is what an
+ * account has to be able to afford. Fifteen scenes reserved 12k tokens and were
+ * refused outright on a balance that covered 4.4k. Four reserve a quarter of
+ * that, which means the same balance carries four times as much of the board,
+ * and a batch that does fail costs four scenes rather than fifteen.
+ *
+ * The whole board still goes into every call as context — batching changes how
+ * many prompts come back, never how much the model has read.
  */
-const PROMPT_BATCH = 15
+const PROMPT_BATCH = 4
 
 /**
  * Stage two: write a prompt for every scene on the board.
@@ -309,6 +332,176 @@ export async function proposePrompts(
   }
 
   return { prompts, model, styleName: style?.name ?? null }
+}
+
+/* ------------------------------------------------------ revising one shot */
+
+/**
+ * Rewrite one scene's prompt to a note the user typed.
+ *
+ * Reads and asks; writes nothing — same contract as `propose` and
+ * `proposePrompts`, and deliberately returning a `PromptPlanProposal` with a
+ * single row rather than a new shape. That is not laziness: it means the
+ * existing `boards:applyPromptPlan` channel, `applyPrompts`, and the diff UI in
+ * `PromptWindow` all carry a revision unchanged. A second write path for
+ * "prompt, but from a different button" would be a second place for the
+ * approval rule to be got wrong.
+ *
+ * The prompt it revises is the one that produced the current take, not the
+ * frame's prompt — those differ the moment a take is generated and the frame is
+ * edited afterwards, and revising the one you did not watch is confusing in a
+ * way that is very hard to see.
+ */
+export async function proposeRevision(
+  db: Db,
+  frameId: string,
+  note: string
+): Promise<PromptPlanProposal> {
+  const trimmed = note.trim()
+  if (!trimmed) {
+    throw new Error('Say what to change about the shot first.')
+  }
+
+  const frame = boards.getFrame(db, frameId)
+  const board = boards.getBoard(db, frame.boardId)
+  const frames = boards.listFrames(db, frame.boardId)
+  const number = frames.findIndex((f) => f.id === frameId) + 1
+
+  const take = chosenTake(db, frameId)
+  const current = take?.prompt.trim() || frame.prompt.trim()
+  if (!current) {
+    throw new Error(
+      'This scene has no prompt to revise yet — write prompts for the board first.'
+    )
+  }
+
+  const items = boards.listItems(db, frame.boardId)
+  const byId = new Map(items.map((i) => [i.id, i]))
+  const references = boards
+    .listRefs(db, frame.boardId)
+    .filter((r) => r.frameId === frameId)
+    .flatMap((r) => {
+      const item = byId.get(r.itemId)
+      return item && item.label.trim() ? [describeItem(item)] : []
+    })
+
+  const style = placedStyle(db, frame.boardId)
+  const model = modelFor(db, 'prompts')
+
+  const prompt = await reviseScenePrompt({
+    db,
+    model,
+    brief: board.brief,
+    visualStyle: board.visualStyle,
+    style,
+    characters: castOf(db, frame.boardId),
+    scene: {
+      number: number > 0 ? number : 1,
+      title: frame.title,
+      description: frame.description,
+      durationSec: frame.durationSec,
+      references
+    },
+    current,
+    note: trimmed
+  })
+
+  return { prompts: [{ frameId, prompt }], model, styleName: style?.name ?? null }
+}
+
+/* -------------------------------------------------------- the AI's cut */
+
+/**
+ * Ask for cut points, having let the model watch the clips.
+ *
+ * Reads, uploads and asks; writes nothing — the same contract as every other
+ * propose in this file, and the reason the timeline's AI mode can show a
+ * proposal beside the manual one and write neither until asked.
+ *
+ * Uploads are capped at the takes the caller named. Never the whole board:
+ * that is bandwidth and a Files API quota spent on clips nobody asked about,
+ * and it is the kind of cost that is invisible until the bill.
+ */
+export async function proposeCut(
+  db: Db,
+  boardId: string,
+  takeIds: readonly string[]
+): Promise<CutProposal> {
+  if (takeIds.length === 0) {
+    throw new Error('Pick the clips to cut from first.')
+  }
+
+  const board = boards.getBoard(db, boardId)
+  const frames = boards.listFrames(db, boardId)
+  const numberByFrame = new Map(frames.map((f, i) => [f.id, i + 1]))
+  const frameById = new Map(frames.map((f) => [f.id, f]))
+
+  // Real lengths, not the requested ones: the model is told how long each clip
+  // is and will happily return an out point past the end of a file if that
+  // number is wrong.
+  const lengths = await measureTakes(db, boardId)
+
+  const ctx = callContext(db, 'prompts')
+  const uploaded: string[] = []
+
+  try {
+    const clips: CutClip[] = []
+
+    for (const takeId of takeIds) {
+      const take = getTake(db, takeId)
+      if (!take) continue
+      const frame = frameById.get(take.frameId)
+      if (!frame) continue
+
+      const file = await uploadFile(ctx, takePath(take.id))
+      uploaded.push(file.name)
+
+      clips.push({
+        takeId: take.id,
+        sceneNumber: numberByFrame.get(take.frameId) ?? 0,
+        sceneTitle: frame.title,
+        description: frame.description,
+        durationSec: lengths[take.id] ?? take.durationSec,
+        uri: file.uri,
+        mimeType: file.mimeType
+      })
+    }
+
+    if (clips.length === 0) {
+      throw new Error('None of those clips still exist.')
+    }
+
+    const model = modelFor(db, 'prompts')
+    const segments = await planCut({
+      db,
+      model,
+      brief: board.brief,
+      clips,
+      targetSec: null
+    })
+
+    return { segments, model }
+  } finally {
+    // Whatever happened, the copies on Google's side are not needed again.
+    // They expire on their own in 48 hours; this is politeness, and it is in a
+    // `finally` because a failed proposal is exactly when they would be left.
+    for (const name of uploaded) await deleteFile(ctx, name)
+  }
+}
+
+/**
+ * Write an approved cut.
+ *
+ * One transaction, by way of `replaceSegments` — which is the same call the
+ * manual timeline writes through. An AI cut is therefore not a second way to
+ * modify the cut; it is the same way, reached by a different route.
+ */
+export function applyCut(
+  db: Db,
+  boardId: string,
+  segments: readonly CutSegmentInput[]
+): StoryCutSegment[] {
+  return replaceSegments(db, boardId, segments)
 }
 
 /* ------------------------------------------------------- style sorting */

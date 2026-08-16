@@ -12,3 +12,14 @@ import { MEDIA_SCHEME } from '@shared/types'
  */
 export const mediaUrl = (itemId: string): string =>
   `${MEDIA_SCHEME}://item/${encodeURIComponent(itemId)}`
+
+/**
+ * The URL for a generated clip.
+ *
+ * Same rule, second host. A take's file is `<takeId>.mp4` inside the app's own
+ * directory, so the id is not just an identifier here — it is the entire path,
+ * which is why an id that names nothing simply 404s rather than reaching for
+ * something else.
+ */
+export const takeUrl = (takeId: string): string =>
+  `${MEDIA_SCHEME}://take/${encodeURIComponent(takeId)}`

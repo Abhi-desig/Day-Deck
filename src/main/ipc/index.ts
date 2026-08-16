@@ -13,6 +13,7 @@ import { IPC } from '@shared/ipc-contract'
 import {
   GOAL_COLORS,
   KEY_SLOTS,
+  MAX_TAKES,
   MEDIA_EXTENSIONS,
   MEDIA_KINDS,
   OMNI_DURATIONS,
@@ -23,6 +24,7 @@ import {
   WINDOW_BACKGROUND,
   isOmniDuration,
   isAiProvider,
+  isSceneLayout,
   isThemeName,
   mediaKindFor
 } from '@shared/types'
@@ -31,6 +33,7 @@ import type {
   KeySlot,
   CurriculumInput,
   CurriculumProgress,
+  CutSegmentInput,
   GoalNotePatch,
   NewGoalNote,
   NewSlot,
@@ -59,8 +62,10 @@ import type {
   StoryListItemPatch,
   StoryListPatch,
   StorySheetPatch,
+  TakeGenerateOptions,
   TagOrigin,
   TagPatch,
+  VideoJobProgress,
   VideoStylePatch
 } from '@shared/types'
 import { dbPath, getDb } from '../db'
@@ -69,7 +74,9 @@ import { SETTING, getUiPrefs, setSetting } from '../db/settings'
 import * as notes from '../db/notes'
 import * as slots from '../db/slots'
 import * as stickers from '../db/stickers'
+import * as cutDb from '../db/cut'
 import * as storyboards from '../db/storyboards'
+import * as takesDb from '../db/takes'
 import * as styles from '../db/styles'
 import * as tags from '../db/tags'
 import * as weekly from '../db/weekly'
@@ -80,6 +87,9 @@ import { launchAtLoginEnabled, setLaunchAtLogin } from '../services/launch'
 import * as curriculum from '../services/curriculum'
 import * as notify from '../services/notify'
 import * as storyboardPlan from '../services/storyboard'
+import * as render from '../services/render'
+import { deleteTakeFile } from '../services/takes'
+import * as video from '../services/video'
 import * as tracker from '../services/tracker'
 import { checkReminders } from '../services/reminders'
 import {
@@ -724,6 +734,172 @@ export function registerIpc(): void {
     }
   )
 
+  ipcMain.handle(
+    IPC.boardsProposeRevision,
+    async (_e, frameId: unknown, note: unknown) => {
+      assertId(frameId, 'scene id')
+      if (typeof note !== 'string' || !note.trim()) {
+        throw new Error('Say what to change about the shot first.')
+      }
+      rateLimit.takeToken(getDb(), 'prompts')
+      // Reads and asks; writes nothing. Applying goes through
+      // boardsApplyPromptPlan like any other prompt change.
+      return storyboardPlan.proposeRevision(getDb(), frameId, note)
+    }
+  )
+
+  ipcMain.handle(IPC.framesSetFinal, (_e, frameId: unknown, on: unknown) => {
+    assertId(frameId, 'scene id')
+    if (typeof on !== 'boolean') {
+      throw new Error('A scene is final or it is not.')
+    }
+    return storyboards.updateFrame(getDb(), frameId, { isFinal: on })
+  })
+
+  /* -------------------------------------------------------------- takes */
+
+  ipcMain.handle(IPC.takesList, (_e, frameId: unknown) => {
+    assertId(frameId, 'scene id')
+    return takesDb.listTakes(getDb(), frameId)
+  })
+
+  ipcMain.handle(IPC.takesPlan, (_e, frameIds: unknown, takes: unknown) => {
+    const ids = validateFrameIds(frameIds)
+    return video.generationPlan(getDb(), ids, validateTakeCount(takes))
+  })
+
+  ipcMain.handle(
+    IPC.takesGenerate,
+    async (event: IpcMainInvokeEvent, frameId: unknown, options: unknown) => {
+      assertId(frameId, 'scene id')
+      const opts = (options ?? {}) as Partial<TakeGenerateOptions>
+      rateLimit.takeToken(getDb(), 'video')
+
+      // Minutes of waiting with nothing on screen otherwise. Modelled on the
+      // curriculum's progress channel: the handler closes over the sender and
+      // guards on isDestroyed, so a closed window cannot be sent to.
+      const send = (update: VideoJobProgress): void => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC.boardsJobProgress, update)
+        }
+      }
+
+      return video.generate(
+        getDb(),
+        frameId,
+        { ...opts, takes: validateTakeCount(opts.takes ?? 1) },
+        send
+      )
+    }
+  )
+
+  ipcMain.handle(IPC.takesChoose, (_e, takeId: unknown) => {
+    assertId(takeId, 'take id')
+    return takesDb.chooseTake(getDb(), takeId)
+  })
+
+  ipcMain.handle(IPC.takesDelete, (_e, takeId: unknown) => {
+    assertId(takeId, 'take id')
+    // The row first, then the file: a file removed with its row still present
+    // is a take that renders as a broken player forever, where a row removed
+    // with its file still present is collected by the startup sweep.
+    const take = takesDb.deleteTake(getDb(), takeId)
+    if (take) deleteTakeFile(takeId)
+  })
+
+  /* ---------------------------------------------------------------- cut */
+
+  ipcMain.handle(IPC.cutGet, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return {
+      cut: cutDb.getCut(getDb(), boardId),
+      segments: cutDb.listSegments(getDb(), boardId)
+    }
+  })
+
+  ipcMain.handle(
+    IPC.cutMove,
+    (_e, boardId: unknown, x: unknown, y: unknown) => {
+      assertId(boardId, 'board id')
+      if (typeof x !== 'number' || typeof y !== 'number') {
+        throw new Error('A position is two numbers.')
+      }
+      cutDb.ensureCut(getDb(), boardId)
+      cutDb.moveCut(getDb(), boardId, x, y)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.cutSetSegments,
+    (_e, boardId: unknown, segments: unknown) => {
+      assertId(boardId, 'board id')
+      return cutDb.replaceSegments(
+        getDb(),
+        boardId,
+        validateSegments(segments)
+      )
+    }
+  )
+
+  ipcMain.handle(IPC.cutPopulate, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return render.populateFromFinals(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.cutMeasure, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return render.measureTakes(getDb(), boardId)
+  })
+
+  ipcMain.handle(
+    IPC.cutExport,
+    async (event: IpcMainInvokeEvent, boardId: unknown) => {
+      assertId(boardId, 'board id')
+      const board = storyboards.getBoard(getDb(), boardId)
+
+      const chosen = await dialog.showSaveDialog({
+        title: 'Export the cut',
+        defaultPath: `${safeFileName(board.title || 'cut')}.mp4`,
+        filters: [{ name: 'MP4 video', extensions: ['mp4'] }]
+      })
+      if (chosen.canceled || !chosen.filePath) return null
+
+      const send = (update: VideoJobProgress): void => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC.boardsJobProgress, update)
+        }
+      }
+
+      try {
+        return await render.renderCut(getDb(), boardId, chosen.filePath, send)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        send({ phase: 'renderError', message })
+        throw err
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.cutPropose,
+    async (_e, boardId: unknown, takeIds: unknown) => {
+      assertId(boardId, 'board id')
+      if (!Array.isArray(takeIds) || takeIds.length === 0) {
+        throw new Error('Pick the clips to cut from first.')
+      }
+      if (takeIds.length > 24) {
+        // Every clip here is uploaded in full. A cap keeps a mis-click from
+        // pushing a board's worth of video through someone's Files API quota.
+        throw new Error('That is too many clips to send in one go.')
+      }
+      for (const id of takeIds) assertId(id, 'take id')
+
+      rateLimit.takeToken(getDb(), 'prompts')
+      // Reads, uploads and asks; writes nothing. cutSetSegments is what writes.
+      return storyboardPlan.proposeCut(getDb(), boardId, takeIds)
+    }
+  )
+
   /* ------------------------------------------------------------- styles */
 
   ipcMain.handle(IPC.stylesList, () => styles.listStyles(getDb()))
@@ -928,6 +1104,14 @@ export function registerIpc(): void {
     }
     setSetting(getDb(), SETTING.sceneNumbers, on ? '1' : '0')
     return on
+  })
+
+  ipcMain.handle(IPC.settingsSetSceneLayout, (_e, layout: unknown) => {
+    if (!isSceneLayout(layout)) {
+      throw new Error(`Unknown scene layout: ${String(layout)}`)
+    }
+    setSetting(getDb(), SETTING.sceneLayout, layout)
+    return layout
   })
 
   /* -------------------------------- projects, editor files and terminals */
@@ -1388,6 +1572,69 @@ function validatePromptApplies(value: unknown): PromptApply[] {
     return { frameId: change.frameId, prompt: change.prompt }
   })
 }
+
+/**
+ * The scenes a generation run covers.
+ *
+ * Capped, and the cap is not arbitrary: this is the only list in the app whose
+ * length is multiplied by a price. A renderer bug that passed a thousand ids
+ * would otherwise be a thousand clips.
+ */
+function validateFrameIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Pick at least one scene to generate.')
+  }
+  if (value.length > 100) {
+    throw new Error('That is too many scenes to generate in one run.')
+  }
+  for (const id of value) assertId(id, 'scene id')
+  return value as string[]
+}
+
+function validateTakeCount(value: unknown): number {
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new Error('Takes per scene has to be a whole number, at least 1.')
+  }
+  if ((value as number) > MAX_TAKES) {
+    throw new Error(`At most ${MAX_TAKES} takes per scene.`)
+  }
+  return value as number
+}
+
+/**
+ * The whole timeline, as the renderer states it.
+ *
+ * Capped and range-checked here rather than trusted, because these numbers
+ * become ffmpeg's `-ss` and `-t`: a negative start or a NaN end reaches a
+ * spawned process as an argument, and arguments to a process are exactly the
+ * kind of thing this boundary exists to check.
+ */
+function validateSegments(value: unknown): CutSegmentInput[] {
+  if (!Array.isArray(value)) throw new Error('Missing timeline')
+  if (value.length > 500) throw new Error('That timeline is too long.')
+
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Malformed timeline segment')
+    }
+    const segment = entry as Record<string, unknown>
+    assertId(segment.takeId, 'take id')
+
+    const startSec = Number(segment.startSec)
+    const endSec = Number(segment.endSec)
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) {
+      throw new Error('A segment needs a real start and end.')
+    }
+    if (startSec < 0 || endSec < 0) {
+      throw new Error('A segment cannot start or end before the clip does.')
+    }
+    return { takeId: segment.takeId, startSec, endSec }
+  })
+}
+
+/** A title is the user's; a filename derived from it has to be the disk's. */
+const safeFileName = (title: string): string =>
+  title.replace(/[/\\:*?"<>|]/g, '-').slice(0, 80).trim() || 'cut'
 
 function validateScene(value: unknown): ScenePlan {
   if (!value || typeof value !== 'object') throw new Error('Missing scene')

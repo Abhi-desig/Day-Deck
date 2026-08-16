@@ -493,3 +493,100 @@ describe('migrating an existing database', () => {
     expect(after).toBe(3)
   })
 })
+
+/**
+ * v12 adds generated clips to a database that already has a board on it.
+ *
+ * The columns are ALTERs on the live frames table, which is exactly where a
+ * migration costs someone their storyboard if it is wrong — so the assertion is
+ * that the existing row survives with sane defaults, not merely that the
+ * statement ran.
+ */
+describe('v12 — jobs and takes', () => {
+  function boardAtV11(): Database.Database {
+    const db = dbAtVersion(11)
+    db.prepare(
+      `INSERT INTO storyboards (id, title, brief, visual_style, color,
+                                sort_index, created_at)
+       VALUES ('b1', 'Launch film', 'A brief', '', 'amber', 0, 'now')`
+    ).run()
+    db.prepare(
+      `INSERT INTO storyboard_frames
+         (id, board_id, title, description, prompt, x, y, w, h, color,
+          sort_index, created_at)
+       VALUES ('f1', 'b1', 'Opening', '', 'a prompt', 0, 0, 300, 240, 'amber',
+               0, 'now')`
+    ).run()
+    return db
+  }
+
+  it('gives an existing scene sane defaults rather than nulls', () => {
+    const db = boardAtV11()
+    migrate(db)
+
+    const frame = db
+      .prepare<[], { is_final: number; revision_note: string; prompt: string }>(
+        `SELECT is_final, revision_note, prompt FROM storyboard_frames
+          WHERE id = 'f1'`
+      )
+      .get()
+
+    expect(frame?.is_final).toBe(0)
+    expect(frame?.revision_note).toBe('')
+    // And nothing the user typed was touched on the way through.
+    expect(frame?.prompt).toBe('a prompt')
+  })
+
+  it('cascades takes from their frame and jobs from their board', () => {
+    const db = boardAtV11()
+    migrate(db)
+
+    db.prepare(
+      `INSERT INTO storyboard_jobs
+         (id, board_id, frame_id, kind, operation, model, prompt, status,
+          error, created_at, updated_at)
+       VALUES ('j1', 'b1', 'f1', 'generate', 'models/veo/operations/x',
+               'veo-3.0', 'a prompt', 'running', '', 'now', 'now')`
+    ).run()
+    db.prepare(
+      `INSERT INTO storyboard_takes
+         (id, frame_id, job_id, take_index, file_name, duration_sec, model,
+          prompt, poster, chosen, created_at)
+       VALUES ('t1', 'f1', 'j1', 0, 't1.mp4', 8, 'veo-3.0', 'a prompt',
+               NULL, 1, 'now')`
+    ).run()
+
+    db.prepare(`DELETE FROM storyboard_frames WHERE id = 'f1'`).run()
+
+    const takes = db
+      .prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM storyboard_takes`)
+      .get()
+    expect(takes?.n).toBe(0)
+
+    // The job survives the frame — frame_id is nullable and the job belongs to
+    // the board. Deleting the board is what takes it.
+    db.prepare(`DELETE FROM storyboards WHERE id = 'b1'`).run()
+    const jobs = db
+      .prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM storyboard_jobs`)
+      .get()
+    expect(jobs?.n).toBe(0)
+  })
+
+  it('refuses a job status or kind it has no code path for', () => {
+    const db = boardAtV11()
+    migrate(db)
+
+    const insert = (kind: string, status: string) =>
+      db
+        .prepare(
+          `INSERT INTO storyboard_jobs
+             (id, board_id, frame_id, kind, operation, model, prompt, status,
+              error, created_at, updated_at)
+           VALUES ('j-bad', 'b1', 'f1', ?, '', '', '', ?, '', 'now', 'now')`
+        )
+        .run(kind, status)
+
+    expect(() => insert('transcode', 'running')).toThrow()
+    expect(() => insert('generate', 'pending')).toThrow()
+  })
+})

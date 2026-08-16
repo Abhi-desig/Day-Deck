@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type {
   StoryBriefRef,
+  StoryCut,
   StoryFrame,
   StoryFrameRef,
   StoryList,
@@ -125,8 +126,23 @@ const graph = (over: Partial<BoardGraphInput> = {}): BoardGraphInput => ({
   briefRefs: [],
   placedStyles: [],
   styleLibrary: [],
+  // The free canvas, which is what most of these cases are about. The container
+  // has its own describe block below.
+  sceneLayout: 'canvas',
+  // No cut until the timeline has been opened once — most boards never reach
+  // it, and drawing an empty one beside every brief says nothing.
+  cut: null,
+  takes: [],
   ...over
 })
+
+const storyCut: StoryCut = {
+  id: 'c1',
+  boardId: board.id,
+  x: 980,
+  y: -40,
+  createdAt: '2026-08-13T00:00:00Z'
+}
 
 describe('the brief node', () => {
   const brief = buildBoardNodes(graph())[0]
@@ -214,14 +230,14 @@ describe('nodes', () => {
   })
 })
 
+/** The builder takes a subset of the graph input, so one helper feeds both. */
+const edgesOf = (over: Partial<BoardGraphInput> = {}) =>
+  buildBoardEdges(graph(over))
+
 describe('edges', () => {
   it('derives one spine per frame and one attachment per placement', () => {
-    const edges = buildBoardEdges({
-      board,
+    const edges = edgesOf({
       frames: [frame('f1'), frame('f2')],
-      items: [],
-      refs: [],
-      briefRefs: [],
       placedStyles: [placement]
     })
 
@@ -238,13 +254,10 @@ describe('edges', () => {
   })
 
   it('wires a ref from its item row to the scene', () => {
-    const edges = buildBoardEdges({
-      board,
+    const edges = edgesOf({
       frames: [frame('f1')],
       items: [item('i1', 'l1')],
-      refs: [ref('f1', 'i1')],
-      briefRefs: [],
-      placedStyles: []
+      refs: [ref('f1', 'i1')]
     })
 
     const wire = edges.find((e) => e.id === 'ref:f1:i1')
@@ -255,27 +268,16 @@ describe('edges', () => {
   })
 
   it('skips a ref whose item is not loaded instead of emitting a broken wire', () => {
-    const edges = buildBoardEdges({
-      board,
-      frames: [frame('f1')],
-      items: [],
-      refs: [ref('f1', 'ghost')],
-      briefRefs: [],
-      placedStyles: []
-    })
+    const edges = edgesOf({ frames: [frame('f1')], refs: [ref('f1', 'ghost')] })
     expect(edges.some((e) => e.id.startsWith('ref:'))).toBe(false)
     // The spine is untouched by the skip.
     expect(edges.some((e) => e.id === 'spine:f1')).toBe(true)
   })
 
   it('wires a brief ref from its item row to the brief', () => {
-    const edges = buildBoardEdges({
-      board,
-      frames: [],
+    const edges = edgesOf({
       items: [item('i1', 'l1')],
-      refs: [],
-      briefRefs: [briefRef('i1')],
-      placedStyles: []
+      briefRefs: [briefRef('i1')]
     })
 
     const wire = edges.find((e) => e.id === 'bref:b1:i1')
@@ -285,15 +287,79 @@ describe('edges', () => {
   })
 
   it('skips a brief ref whose item is not loaded', () => {
-    const edges = buildBoardEdges({
-      board,
-      frames: [],
-      items: [],
-      refs: [],
-      briefRefs: [briefRef('ghost')],
-      placedStyles: []
-    })
+    const edges = edgesOf({ briefRefs: [briefRef('ghost')] })
     expect(edges.some((e) => e.id.startsWith('bref:'))).toBe(false)
+  })
+})
+
+describe('the scene container', () => {
+  const stacked = (over: Partial<BoardGraphInput> = {}) =>
+    graph({ sceneLayout: 'stack', ...over })
+
+  it('replaces every scene node with one box holding them all', () => {
+    const nodes = buildBoardNodes(
+      stacked({ frames: [frame('f1'), frame('f2'), frame('f3')] })
+    )
+
+    expect(nodes.some((n) => n.type === 'scene')).toBe(false)
+    const group = nodes.find((n) => n.type === 'group')
+    expect(group?.id).toBe('group:b1')
+
+    const { scenes } = group?.data as { scenes: { frame: StoryFrame }[] }
+    // Board order, and the index each row numbers itself by, both preserved.
+    expect(scenes.map((s) => s.frame.id)).toEqual(['f1', 'f2', 'f3'])
+    expect((group?.data as { scenes: { index: number }[] }).scenes[2].index).toBe(
+      2
+    )
+  })
+
+  it('keeps its pointer events, the trap the brief node already paid for', () => {
+    // Neither selectable nor draggable, so React Flow would otherwise stamp
+    // pointer-events: none on the wrapper — and every field in every row would
+    // be unclickable. Same override, same reason, pinned the same way.
+    const group = buildBoardNodes(stacked({ frames: [frame('f1')] })).find(
+      (n) => n.type === 'group'
+    )
+    expect(group?.style?.pointerEvents).toBe('all')
+    expect(group?.draggable).toBe(false)
+    expect(group?.deletable).toBe(false)
+  })
+
+  it('collapses the spine to a single edge', () => {
+    const edges = buildBoardEdges(
+      stacked({ frames: [frame('f1'), frame('f2'), frame('f3')] })
+    )
+
+    const spine = edges.filter((e) => e.id.startsWith('spine:'))
+    expect(spine).toHaveLength(1)
+    expect(spine[0].id).toBe('spine:b1')
+    expect(spine[0].target).toBe('group:b1')
+    expect(spine[0].deletable).toBe(false)
+  })
+
+  it('draws no spine at all when there are no scenes to wire', () => {
+    expect(buildBoardEdges(stacked()).some((e) => e.id.startsWith('spine:')))
+      .toBe(false)
+  })
+
+  it('lands a reference on its own scene row, not on the box', () => {
+    const edges = buildBoardEdges(
+      stacked({
+        frames: [frame('f1'), frame('f2')],
+        items: [item('i1', 'l1')],
+        refs: [ref('f2', 'i1')]
+      })
+    )
+
+    const wire = edges.find((e) => e.id === 'ref:f2:i1')
+    expect(wire?.target).toBe('group:b1')
+    // The row's handle id is the frame id — that is what makes the wire land on
+    // scene 2 rather than on the container's edge, and what onConnect reads
+    // back to know which scene a dropped wire belongs to.
+    expect(wire?.targetHandle).toBe('f2')
+    // Unchanged in both layouts, so onEdgesDelete still parses it.
+    expect(wire?.source).toBe('list:l1')
+    expect(wire?.sourceHandle).toBe('i1')
   })
 })
 
@@ -315,5 +381,53 @@ describe('grouping', () => {
     )
     expect(grouped.get('f1')?.map((i) => i.id)).toEqual(['i1'])
     expect(grouped.get('f2')?.map((i) => i.id)).toEqual(['i2'])
+  })
+})
+
+describe('the timeline node', () => {
+  it('is absent until the board has a cut', () => {
+    const nodes = buildBoardNodes(graph({ frames: [frame('f1')] }))
+    expect(nodes.some((n) => n.type === 'timeline')).toBe(false)
+    expect(
+      buildBoardEdges(graph({ frames: [frame('f1')] })).some((e) =>
+        e.id.startsWith('cut:')
+      )
+    ).toBe(false)
+  })
+
+  it('sits where the cut row says, unlike the pinned container', () => {
+    const node = buildBoardNodes(graph({ cut: storyCut })).find(
+      (n) => n.type === 'timeline'
+    )
+    expect(node?.id).toBe('timeline:b1')
+    // Stored, because this is a node the user arranges. The container is not.
+    expect(node?.position).toEqual({ x: 980, y: -40 })
+    // Same pointer-events override as the brief and the container: without it
+    // every trim handle inside stops responding.
+    expect(node?.style?.pointerEvents).toBe('all')
+    expect(node?.deletable).toBe(false)
+  })
+
+  it('is fed by the container when stacked and by the brief when spread', () => {
+    const stacked = buildBoardEdges(
+      graph({ sceneLayout: 'stack', frames: [frame('f1')], cut: storyCut })
+    ).find((e) => e.id === 'cut:b1')
+    expect(stacked?.source).toBe('group:b1')
+    expect(stacked?.target).toBe('timeline:b1')
+
+    // Spread out there is no single node the clips come from, so the wire
+    // leaves the brief — which is what every scene descends from anyway.
+    const spread = buildBoardEdges(
+      graph({ sceneLayout: 'canvas', frames: [frame('f1')], cut: storyCut })
+    ).find((e) => e.id === 'cut:b1')
+    expect(spread?.source).toBe('brief:b1')
+  })
+
+  it('is derived, so it cannot be deleted as if it were a wire someone drew', () => {
+    const wire = buildBoardEdges(graph({ cut: storyCut })).find(
+      (e) => e.id === 'cut:b1'
+    )
+    expect(wire?.deletable).toBe(false)
+    expect(wire?.selectable).toBe(false)
   })
 })

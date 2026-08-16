@@ -10,7 +10,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { BackupError, exportBackup, importBackup } = await import(
+const { BackupError, TABLES, exportBackup, importBackup } = await import(
   '../src/main/services/backup'
 )
 const { MIGRATIONS } = await import('../src/main/db/migrations')
@@ -366,5 +366,51 @@ describe('refusing a project root broad enough to be the disk', () => {
   it('accepts an ordinary project folder inside home', () => {
     const fine = `${home}/code/some-project`
     expect(() => importBackup(makeDb(), backupWithProjectAt(fine))).not.toThrow()
+  })
+})
+
+/**
+ * The single highest-consequence line in the backup service.
+ *
+ * A table missing from `TABLES` is not merely un-backed-up. Restore deletes
+ * every table in the manifest and re-inserts from the file — but a table that
+ * is not in the manifest is never deleted *and* never restored, so it survives
+ * the restore holding rows that reference parents which no longer exist. The
+ * failure shows up much later, as a board whose takes point at frames that were
+ * replaced, and nothing in the app is going to notice at the time.
+ *
+ * So this is asserted as data rather than trusted to review: every table the
+ * migrations create must be named in the manifest.
+ */
+describe('the backup manifest', () => {
+  it('covers every table the schema creates', () => {
+    const db = makeDb()
+    const created = db
+      .prepare<[], { name: string }>(
+        `SELECT name FROM sqlite_master
+          WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+          ORDER BY name`
+      )
+      .all()
+      .map((row) => row.name)
+
+    const manifest = new Set<string>(TABLES)
+    const missing = created.filter((name) => !manifest.has(name))
+
+    expect(missing).toEqual([])
+  })
+
+  it('names no table the schema does not have', () => {
+    const db = makeDb()
+    const created = new Set(
+      db
+        .prepare<[], { name: string }>(
+          `SELECT name FROM sqlite_master WHERE type = 'table'`
+        )
+        .all()
+        .map((row) => row.name)
+    )
+
+    expect(TABLES.filter((name) => !created.has(name))).toEqual([])
   })
 })

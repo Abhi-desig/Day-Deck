@@ -7,7 +7,8 @@ import type {
 } from '@shared/types'
 import { OMNI_DURATIONS, snapDuration } from '@shared/types'
 import type { Db } from '../db'
-import { AiError, generateJson, generateText } from './providers'
+import { AiError, callContext, generateJson, generateText } from './providers'
+import { generateJsonWithFiles } from './providers/gemini'
 
 /**
  * What Day Deck asks a model for, in Day Deck's own terms.
@@ -151,6 +152,17 @@ function parseTopics(text: string): TopicDraft[] {
 interface JsonBudget {
   timeoutMs: number
   output: number
+  /**
+   * How far `output` may be cut to fit a balance that cannot reserve it.
+   *
+   * A credit-metered provider holds the whole ceiling before it runs anything,
+   * so the generous worst case above is what gets refused — not the answer,
+   * which is usually a fraction of it. Stating a floor is what lets the adapter
+   * re-ask for less instead of failing the run, and stating it *per job* is
+   * what stops it re-asking for less than the job can be done in: fifteen
+   * prompts and one style sort do not become impossible at the same number.
+   */
+  minOutput: number
   thinking: number
 }
 
@@ -187,6 +199,10 @@ export async function decomposeCurriculum(opts: {
       // A whole curriculum's worth of topics; the cap stays where it was
       // because truncation here fails the entire plan.
       output: 32_768,
+      // A short curriculum genuinely fits in a quarter of that, and a plan is
+      // worth having on a thin balance. Below this the topic list starts
+      // arriving half-written, which fails the plan either way.
+      minOutput: 8_192,
       // Deciding how a subject breaks up is genuinely a reasoning job, so this
       // is the most generous budget in the file — bounded, not unlimited.
       thinking: 4_096
@@ -332,7 +348,9 @@ export async function subdivideTopics(opts: {
       opts.model,
       buildSubdividePrompt(opts),
       POINTS_SCHEMA,
-      { timeoutMs: 120_000, output: 32_768, thinking: 2_048 }
+      // Fifteen topics' worth of short bullet points — roomy above, and still
+      // workable well below, since the answer is lists of half-sentences.
+      { timeoutMs: 120_000, output: 32_768, minOutput: 4_096, thinking: 2_048 }
     )
   )
 }
@@ -380,7 +398,10 @@ export async function askAgent(opts: {
     history: opts.history,
     question: `DAY CONTEXT:\n${opts.context}\n\nQUESTION: ${opts.question}`,
     timeoutMs: 60_000,
-    output: 1_024
+    output: 1_024,
+    // The one place a trim is nearly free: prose keeps whatever arrived, so a
+    // shorter answer on a thin balance is a shorter answer, not a failure.
+    minOutput: 256
   })
 }
 
@@ -645,6 +666,7 @@ export async function planScenes(opts: ScenePlanInput): Promise<ScenePlan[]> {
         // a forty-shot film is a few thousand tokens; the old 32k ceiling was
         // room for a runaway rather than room for an answer.
         output: 8_192,
+        minOutput: 2_048,
         thinking: 1_024
       }
     )
@@ -830,9 +852,21 @@ export async function planPrompts(
       PROMPT_SCHEMA,
       {
         timeoutMs: 180_000,
-        // PROMPT_BATCH prompts, each a paragraph that restates the look and any
-        // cast in it. Generous for fifteen of those, nowhere near 32k.
-        output: 12_288,
+        /**
+         * PROMPT_BATCH prompts, each a paragraph that restates the look and any
+         * cast in it. Four of those is around 1,200 tokens of answer, so this
+         * is roughly three times the realistic need.
+         *
+         * It used to be 12,288, sized for a batch of fifteen — and that number
+         * is what a credit-metered gateway reserved up front and refused, on an
+         * account whose balance covered about 4,400. The answer was never
+         * anywhere near 12k; the reservation was. Batching smaller fixed the
+         * refusal and the ceiling followed the batch down.
+         */
+        output: 4_096,
+        // Four complete prompts plus their thinking. Below this they start
+        // arriving cut off mid-sentence, which is not a cheaper success.
+        minOutput: 2_048,
         // Most of this job is restating settled wording in a fixed order, which
         // is close to transcription — it does not need long deliberation.
         thinking: 512
@@ -840,6 +874,322 @@ export async function planPrompts(
     ),
     opts.write
   )
+}
+
+/* ---------------------------------------------------------- revising one */
+
+const REVISION_SCHEMA = {
+  type: 'object',
+  properties: { prompt: { type: 'string' } },
+  required: ['prompt']
+} as const
+
+export interface RevisionInput {
+  db: Db
+  model: string
+  brief: string
+  visualStyle: string
+  style: VideoStyle | null
+  characters: SheetLine[]
+  /** This shot, as the board describes it. */
+  scene: {
+    number: number
+    title: string
+    description: string
+    durationSec: number | null
+    references: string[]
+  }
+  /** The prompt that produced the take being revised, verbatim. */
+  current: string
+  /** What the user wants changed, in their own words. */
+  note: string
+}
+
+/**
+ * Rewrite one prompt to a note.
+ *
+ * The instruction that matters is "change what was asked and nothing else".
+ * A revision that quietly re-words the look breaks the shot's consistency with
+ * every other shot on the board, which is the one thing the whole prompt stage
+ * exists to protect — and it does it invisibly, because the prompt still reads
+ * perfectly well on its own.
+ */
+function buildRevisionPrompt(opts: RevisionInput): string {
+  const parts: string[] = [
+    'You are a director revising one generation prompt for an AI video generator.',
+    '',
+    'CREATIVE BRIEF:',
+    opts.brief.trim() || '(none given)'
+  ]
+
+  if (opts.visualStyle.trim()) {
+    parts.push('', 'VISUAL STYLE (from the brief):', opts.visualStyle.trim())
+  }
+
+  if (opts.style) {
+    parts.push(
+      '',
+      `LOOK — "${opts.style.name}". Every prompt on this board states it in this wording:`,
+      renderStyle(opts.style)
+    )
+  }
+
+  parts.push(
+    ...renderCast(
+      opts.characters,
+      'When this shot shows one of these people, their description must survive the revision word for word.'
+    )
+  )
+
+  const duration =
+    opts.scene.durationSec == null ? '' : ` [${opts.scene.durationSec}s]`
+
+  parts.push(
+    '',
+    `THE SHOT — scene ${opts.scene.number}${duration}: ${
+      opts.scene.title || '(untitled)'
+    } — ${opts.scene.description || '(no description)'}`,
+    ...(opts.scene.references.length > 0
+      ? [`References wired to it: ${opts.scene.references.join(', ')}`]
+      : []),
+    '',
+    'THE PROMPT THAT PRODUCED THE CURRENT TAKE, verbatim:',
+    '"""',
+    opts.current.trim(),
+    '"""',
+    '',
+    "WHAT TO CHANGE, in the director's own words:",
+    '"""',
+    opts.note.trim(),
+    '"""',
+    '',
+    'RULES:',
+    '- Change what was asked for and nothing else. Every other clause keeps its exact wording.',
+    '- The look, the film stock, the aspect and any character description are not yours to reword. They are what makes this shot cut together with the others.',
+    '- Keep the order: subject, action, camera, lens, lighting, grade, film stock, aspect.',
+    '- Still one continuous shot, and still sized to the length in brackets.',
+    '- Return the whole revised prompt, not a diff and not a description of what you changed.'
+  )
+
+  return parts.join('\n')
+}
+
+export async function reviseScenePrompt(
+  opts: RevisionInput
+): Promise<string> {
+  const raw = await askForJson(
+    opts.db,
+    'prompts',
+    opts.model,
+    buildRevisionPrompt(opts),
+    REVISION_SCHEMA,
+    {
+      timeoutMs: 180_000,
+      // One prompt, so a quarter of a PROMPT_BATCH batch — and sized the same
+      // way, because a credit-metered provider reserves this ceiling up front.
+      // A revision must never be the call that fails on a thin balance.
+      output: 4_096,
+      minOutput: 2_048,
+      // Mostly restating settled wording with one clause changed.
+      thinking: 512
+    }
+  )
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new AiError(
+      'The model did not return usable JSON for the revised prompt.',
+      'parse'
+    )
+  }
+
+  const prompt = (parsed as { prompt?: unknown }).prompt
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    throw new AiError('The model returned no revised prompt.', 'parse')
+  }
+  return prompt.trim()
+}
+
+/* ------------------------------------------------------------- the cut */
+
+const CUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    segments: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          take_id: { type: 'string' },
+          start_sec: { type: 'number' },
+          end_sec: { type: 'number' },
+          reason: { type: 'string' }
+        },
+        required: ['take_id', 'start_sec', 'end_sec', 'reason'],
+        propertyOrdering: ['take_id', 'start_sec', 'end_sec', 'reason']
+      }
+    }
+  },
+  required: ['segments']
+} as const
+
+export interface CutClip {
+  takeId: string
+  /** The scene this clip belongs to, for the prompt's benefit. */
+  sceneNumber: number
+  sceneTitle: string
+  description: string
+  /** The clip's real length, as ffprobe measured it. */
+  durationSec: number
+  uri: string
+  mimeType: string
+}
+
+export interface CutProposalRow {
+  takeId: string
+  startSec: number
+  endSec: number
+  /** Why this cut point. Shown beside the segment; never written to a row. */
+  reason: string
+}
+
+function buildCutPrompt(opts: {
+  brief: string
+  clips: CutClip[]
+  targetSec: number | null
+}): string {
+  const parts: string[] = [
+    'You are an editor choosing cut points. The clips are attached in the order they appear below, one per shot.',
+    '',
+    'THE FILM:',
+    opts.brief.trim() || '(no brief given)',
+    '',
+    'THE CLIPS, in cutting order:',
+    ...opts.clips.map(
+      (clip, i) =>
+        `${i + 1}. take_id=${clip.takeId} — scene ${clip.sceneNumber}, "${
+          clip.sceneTitle || 'untitled'
+        }" — ${clip.description || 'no description'} [${clip.durationSec.toFixed(
+          1
+        )}s long]`
+    )
+  ]
+
+  if (opts.targetSec) {
+    parts.push(
+      '',
+      `TARGET LENGTH: about ${opts.targetSec} seconds for the finished film.`
+    )
+  }
+
+  parts.push(
+    '',
+    'RULES:',
+    '- Watch each clip. Choose start and end times that keep the strongest part of the action and drop dead air at the head and tail.',
+    '- Times are in seconds from the start of that clip, and must lie inside its length as given above.',
+    '- Keep the clips in the order listed. You are trimming, not reordering.',
+    '- A clip may appear more than once if two separate moments in it are both worth keeping. It may be left out entirely if nothing in it is.',
+    '- Never return a segment shorter than half a second — it reads as a glitch rather than a cut.',
+    '- Give one short, concrete reason per segment, about what is in the frame. "Tightens the pacing" says nothing; "starts as she turns, drops the empty tail" does.'
+  )
+
+  return parts.join('\n')
+}
+
+/**
+ * Ask for cut points, having watched the clips.
+ *
+ * The uploads are the caller's job — this only takes the URIs, so the thing
+ * that costs bandwidth is decided by the code that knows which clips the user
+ * selected rather than by the code that writes the prompt.
+ */
+export async function planCut(opts: {
+  db: Db
+  model: string
+  brief: string
+  clips: CutClip[]
+  targetSec: number | null
+}): Promise<CutProposalRow[]> {
+  if (opts.clips.length === 0) return []
+
+  const ctx = callContext(opts.db, 'prompts')
+  const raw = await generateJsonWithFiles(
+    ctx,
+    {
+      model: opts.model,
+      prompt: buildCutPrompt(opts),
+      schema: CUT_SCHEMA,
+      // Three minutes: the model is watching video, not reading text, and the
+      // first token takes noticeably longer to arrive than on a prose call.
+      timeoutMs: 180_000,
+      output: 4_096,
+      minOutput: 2_048,
+      // Genuinely a judgement call about what is in the frame, so more than the
+      // 512 a restating job gets — but bounded, because it is still one answer.
+      thinking: 1_024
+    },
+    opts.clips.map((clip) => ({ uri: clip.uri, mimeType: clip.mimeType }))
+  )
+
+  return parseCut(raw, opts.clips)
+}
+
+/**
+ * Keep only segments that name a real clip and lie inside it.
+ *
+ * The clamping is not defensive tidiness — a start past the end of the file
+ * becomes ffmpeg's `-ss`, and the export produces an empty segment that then
+ * breaks the concat. A model that hallucinates a take id is dropped outright
+ * for the same reason.
+ */
+function parseCut(raw: string, clips: readonly CutClip[]): CutProposalRow[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new AiError('The model did not return usable JSON for the cut.', 'parse')
+  }
+
+  const segments = (parsed as { segments?: unknown }).segments
+  if (!Array.isArray(segments)) {
+    throw new AiError('The model returned JSON without a "segments" array.', 'parse')
+  }
+
+  const lengthById = new Map(clips.map((c) => [c.takeId, c.durationSec]))
+  const out: CutProposalRow[] = []
+
+  for (const entry of segments) {
+    if (!entry || typeof entry !== 'object') continue
+    const row = entry as Record<string, unknown>
+    const takeId = typeof row.take_id === 'string' ? row.take_id : ''
+    const full = lengthById.get(takeId)
+    if (!full) continue
+
+    const startSec = Math.max(0, Math.min(Number(row.start_sec), full))
+    const endSec = Math.max(0, Math.min(Number(row.end_sec), full))
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) continue
+    // Half a second is the floor stated in the prompt; anything under it reads
+    // as a glitch rather than a cut, and is more likely a mistake than intent.
+    if (endSec - startSec < 0.5) continue
+
+    out.push({
+      takeId,
+      startSec,
+      endSec,
+      reason: typeof row.reason === 'string' ? row.reason.trim() : ''
+    })
+  }
+
+  if (out.length === 0) {
+    throw new AiError(
+      'The model did not return a usable cut for any of those clips.',
+      'parse'
+    )
+  }
+
+  return out
 }
 
 /* ------------------------------------------------------- style sorting */
@@ -952,7 +1302,7 @@ export async function sortStyleText(opts: {
     // Moving the user's own words into named boxes. The output is a handful of
     // short fields and there is nothing here to reason about — anything the
     // model thought up would be thrown away by keepGroundedFields anyway.
-    { timeoutMs: 30_000, output: 2_048, thinking: 0 }
+    { timeoutMs: 30_000, output: 2_048, minOutput: 512, thinking: 0 }
   )
 
   let parsed: unknown

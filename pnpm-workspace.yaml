@@ -10,6 +10,13 @@ allowBuilds:
   # binary Node builds here loads unchanged in Electron — no electron-rebuild.
   node-pty: true
   electron-winstaller: false
+  # ffmpeg-static ships no binary in the tarball — its install script downloads
+  # the right build for this platform from the package's GitHub release. So the
+  # script is not optional here: without it the package is a path helper
+  # pointing at a file that does not exist, and the trimmer fails at runtime
+  # rather than at install time. (ffprobe-static needs no script; its binaries
+  # are in the tarball.)
+  ffmpeg-static: true
 minimumReleaseAgeExclude:
   - '@xyflow/react@12.11.3'
   - '@xyflow/system@0.0.80'

@@ -6,7 +6,12 @@ import {
 } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import type { DeckApi } from '@shared/ipc-contract'
-import type { CurriculumProgress, PtyChunk, PtyExit } from '@shared/types'
+import type {
+  CurriculumProgress,
+  PtyChunk,
+  PtyExit,
+  VideoJobProgress
+} from '@shared/types'
 
 /** Subscribe to a one-way main -> renderer channel, returning an unsubscribe. */
 function subscribe<T>(
@@ -166,7 +171,33 @@ const api: DeckApi = {
       ipcRenderer.invoke(IPC.boardsApplyScenePlan, boardId, applies),
     planPrompts: (boardId) => ipcRenderer.invoke(IPC.boardsPlanPrompts, boardId),
     applyPromptPlan: (boardId, applies) =>
-      ipcRenderer.invoke(IPC.boardsApplyPromptPlan, boardId, applies)
+      ipcRenderer.invoke(IPC.boardsApplyPromptPlan, boardId, applies),
+    proposeRevision: (frameId, note) =>
+      ipcRenderer.invoke(IPC.boardsProposeRevision, frameId, note),
+    setFinal: (frameId, isFinal) =>
+      ipcRenderer.invoke(IPC.framesSetFinal, frameId, isFinal)
+  },
+  takes: {
+    list: (frameId) => ipcRenderer.invoke(IPC.takesList, frameId),
+    plan: (frameIds, takes) =>
+      ipcRenderer.invoke(IPC.takesPlan, frameIds, takes),
+    generate: (frameId, options) =>
+      ipcRenderer.invoke(IPC.takesGenerate, frameId, options),
+    choose: (takeId) => ipcRenderer.invoke(IPC.takesChoose, takeId),
+    remove: (takeId) => ipcRenderer.invoke(IPC.takesDelete, takeId),
+    onProgress: (handler) =>
+      subscribe<VideoJobProgress>(IPC.boardsJobProgress, handler)
+  },
+  cut: {
+    get: (boardId) => ipcRenderer.invoke(IPC.cutGet, boardId),
+    move: (boardId, x, y) => ipcRenderer.invoke(IPC.cutMove, boardId, x, y),
+    setSegments: (boardId, segments) =>
+      ipcRenderer.invoke(IPC.cutSetSegments, boardId, segments),
+    populate: (boardId) => ipcRenderer.invoke(IPC.cutPopulate, boardId),
+    measure: (boardId) => ipcRenderer.invoke(IPC.cutMeasure, boardId),
+    export: (boardId) => ipcRenderer.invoke(IPC.cutExport, boardId),
+    propose: (boardId, takeIds) =>
+      ipcRenderer.invoke(IPC.cutPropose, boardId, takeIds)
   },
   styles: {
     list: () => ipcRenderer.invoke(IPC.stylesList),
@@ -204,7 +235,9 @@ const api: DeckApi = {
     prefs: () => ipcRenderer.invoke(IPC.settingsGetPrefs),
     setTheme: (theme) => ipcRenderer.invoke(IPC.settingsSetTheme, theme),
     setSceneNumbers: (on) =>
-      ipcRenderer.invoke(IPC.settingsSetSceneNumbers, on)
+      ipcRenderer.invoke(IPC.settingsSetSceneNumbers, on),
+    setSceneLayout: (layout) =>
+      ipcRenderer.invoke(IPC.settingsSetSceneLayout, layout)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC.projectsList),

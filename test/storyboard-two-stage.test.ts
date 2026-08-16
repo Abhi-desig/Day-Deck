@@ -172,9 +172,19 @@ describe('stage two: the prompts', () => {
 
     const proposal = await plan.proposePrompts(db, board.id)
 
-    // Two sequential batches: 15, then the remaining 2.
-    expect(requests.map((w) => w.length)).toEqual([15, 2])
+    // Five sequential batches of four, then the remaining one. Small batches
+    // are what keep a credit-metered provider's up-front reservation small —
+    // it holds the request's whole output ceiling before generating anything,
+    // so the batch size is what an account has to be able to afford.
+    expect(requests.map((w) => w.length)).toEqual([4, 4, 4, 4, 1])
+    // Every scene still gets a prompt; batching changed the number of calls,
+    // not the coverage.
     expect(proposal.prompts).toHaveLength(17)
+    // And each call reads the whole board regardless of which four it writes.
+    const lastCall = JSON.parse(
+      (fn.mock.calls[4][1] as RequestInit).body as string
+    )
+    expect(lastCall.contents[0].parts[0].text).toContain('17. S17')
   })
 
   it('refuses an empty board rather than asking for nothing', async () => {

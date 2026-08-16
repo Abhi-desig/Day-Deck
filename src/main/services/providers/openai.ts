@@ -5,6 +5,7 @@ import {
   type JsonRequest,
   type TextRequest,
   type WireAdapter,
+  affordableCeiling,
   effortTier,
   guardTruncation,
   schemaInstruction,
@@ -125,6 +126,17 @@ const canRetreat = (err: unknown): err is AiError =>
   err instanceof AiError && err.status === 400 && err.kind !== 'auth'
 
 /**
+ * How many times a call may shrink itself to fit a balance.
+ *
+ * One is the case that exists: the gateway states what the account can afford
+ * and the next request asks for exactly that. The second is for a balance that
+ * moved between the two — someone else's job billing against the same account
+ * — and past that a shrinking sequence has stopped being one request and
+ * started being a spiral.
+ */
+const MAX_CREDIT_RETREATS = 2
+
+/**
  * One structured-JSON call, degrading only on what the server actually
  * rejected.
  *
@@ -144,13 +156,18 @@ async function generateJson(ctx: CallContext, req: JsonRequest): Promise<string>
   let modernTokenField = true
   let temperature = true
 
+  // Not a field to give up but a number to lower, and only ever to one the
+  // provider has already said it will accept.
+  let ceiling = req.output
+  let creditRetreats = 0
+
   for (;;) {
     const body: Record<string, unknown> = {
       model: req.model,
       messages: [{ role: 'user', content: prompt }],
       ...(modernTokenField
-        ? { max_completion_tokens: req.output }
-        : { max_tokens: req.output }),
+        ? { max_completion_tokens: ceiling }
+        : { max_tokens: ceiling }),
       ...(temperature ? { temperature: 0.2 } : {}),
       ...(reasoning ? { reasoning_effort: effortTier(req.thinking) } : {}),
       ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
@@ -170,6 +187,16 @@ async function generateJson(ctx: CallContext, req: JsonRequest): Promise<string>
         )
       )
     } catch (err) {
+      // Checked first: a credit refusal arrives as a 400 on some gateways, and
+      // the field-dropping loop below would spend three more requests looking
+      // for a parameter that was never the problem.
+      if (err instanceof AiError && err.kind === 'credit') {
+        const fits = affordableCeiling(err, ceiling, req.minOutput)
+        if (fits === null || creditRetreats >= MAX_CREDIT_RETREATS) throw err
+        ceiling = fits
+        creditRetreats += 1
+        continue
+      }
       if (!canRetreat(err)) throw err
 
       if (reasoning && REJECTED.reasoning.test(err.message)) {
@@ -209,14 +236,16 @@ async function generateText(ctx: CallContext, req: TextRequest): Promise<string>
 
   let modernTokenField = true
   let temperature = true
+  let ceiling = req.output
+  let creditRetreats = 0
 
   for (;;) {
     const body: Record<string, unknown> = {
       model: req.model,
       messages,
       ...(modernTokenField
-        ? { max_completion_tokens: req.output }
-        : { max_tokens: req.output }),
+        ? { max_completion_tokens: ceiling }
+        : { max_tokens: ceiling }),
       ...(temperature ? { temperature: 0.3 } : {})
     }
 
@@ -232,6 +261,13 @@ async function generateText(ctx: CallContext, req: TextRequest): Promise<string>
         'prose'
       )
     } catch (err) {
+      if (err instanceof AiError && err.kind === 'credit') {
+        const fits = affordableCeiling(err, ceiling, req.minOutput)
+        if (fits === null || creditRetreats >= MAX_CREDIT_RETREATS) throw err
+        ceiling = fits
+        creditRetreats += 1
+        continue
+      }
       if (!canRetreat(err)) throw err
       if (modernTokenField && REJECTED.maxCompletion.test(err.message)) {
         modernTokenField = false

@@ -491,5 +491,88 @@ export const MIGRATIONS: readonly string[] = [
   -- nearest — 4 and 6 are equidistant, and lengthening a shot someone already
   -- timed loses nothing where shortening it cuts a beat.
   UPDATE storyboard_frames SET duration_sec = 6 WHERE duration_sec = 5;
+  `,
+
+  /* v12 — generated clips: the jobs that make them and the takes they produce. */
+  `
+  -- Whether this scene is settled. The gate on what flows into the cut, so it
+  -- is a property of the scene rather than of any one take: a scene can be
+  -- final with three takes on it, and which of them is used is a separate
+  -- question answered by storyboard_takes.chosen.
+  ALTER TABLE storyboard_frames ADD COLUMN is_final INTEGER NOT NULL DEFAULT 0;
+
+  -- The last thing the user asked to be changed about this shot, kept so the
+  -- field still says what you typed after the revision has been applied.
+  ALTER TABLE storyboard_frames ADD COLUMN revision_note TEXT NOT NULL DEFAULT '';
+
+  -- Generation is not request/response: it is submit, then poll a long-running
+  -- operation, then download. Quitting halfway through would otherwise lose a
+  -- clip the provider has already been paid to make, so the operation name is
+  -- written down and re-polled on the next launch.
+  CREATE TABLE storyboard_jobs (
+    id         TEXT PRIMARY KEY,
+    board_id   TEXT NOT NULL REFERENCES storyboards(id) ON DELETE CASCADE,
+    frame_id   TEXT REFERENCES storyboard_frames(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('generate','render')),
+    operation  TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
+    prompt     TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL CHECK (status IN ('queued','running','done','error')),
+    error      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_jobs_board ON storyboard_jobs(board_id);
+  CREATE INDEX idx_sb_jobs_status ON storyboard_jobs(status);
+
+  -- Every take, not just the good one. A generation that cost money is kept
+  -- until the user deletes it: "regenerate" must never be the same gesture as
+  -- "throw the last one away", because the last one may well have been better.
+  --
+  -- file_name is a basename and the id is the name, so no row here carries a
+  -- path — there is nothing to sanitise because there is nothing to traverse.
+  CREATE TABLE storyboard_takes (
+    id           TEXT PRIMARY KEY,
+    frame_id     TEXT NOT NULL REFERENCES storyboard_frames(id) ON DELETE CASCADE,
+    job_id       TEXT REFERENCES storyboard_jobs(id) ON DELETE SET NULL,
+    take_index   INTEGER NOT NULL DEFAULT 0,
+    file_name    TEXT NOT NULL,
+    duration_sec REAL NOT NULL DEFAULT 0,
+    model        TEXT NOT NULL DEFAULT '',
+    prompt       TEXT NOT NULL DEFAULT '',
+    poster       TEXT,
+    chosen       INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_takes_frame ON storyboard_takes(frame_id);
+  `,
+
+  /* v13 — the cut: one timeline per board, made of trimmed segments. */
+  `
+  -- One per board, hence the UNIQUE. A board is one film; two timelines on it
+  -- would be two answers to "what is the cut" and nothing could choose between
+  -- them. x/y are stored here unlike the scene container's, because this node
+  -- is one the user positions relative to the rest of the graph.
+  CREATE TABLE storyboard_cuts (
+    id         TEXT PRIMARY KEY,
+    board_id   TEXT NOT NULL UNIQUE REFERENCES storyboards(id) ON DELETE CASCADE,
+    x          REAL NOT NULL DEFAULT 0,
+    y          REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+
+  -- A segment is (take, start, end), which is what lets one scene contribute
+  -- more than once: two of its three takes back to back, or the same take
+  -- twice. A column on storyboard_takes could not express either.
+  CREATE TABLE storyboard_cut_segments (
+    id         TEXT PRIMARY KEY,
+    cut_id     TEXT NOT NULL REFERENCES storyboard_cuts(id) ON DELETE CASCADE,
+    take_id    TEXT NOT NULL REFERENCES storyboard_takes(id) ON DELETE CASCADE,
+    start_sec  REAL NOT NULL DEFAULT 0,
+    end_sec    REAL NOT NULL,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_cut_segments_cut ON storyboard_cut_segments(cut_id);
   `
 ]

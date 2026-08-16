@@ -29,8 +29,13 @@ vi.mock('../src/main/services/secrets', () => ({
 }))
 
 const providers = await import('../src/main/services/providers')
+const { listVideoModels } = await import('../src/main/services/providers/veo')
+const { NON_TEXT, isVideoModel } = await import(
+  '../src/main/services/providers/wire'
+)
 const { decomposeCurriculum } = await import('../src/main/services/ai')
 const { configureSlot, makeDb } = await import('./helpers')
+const { PROVIDER_INFO, videoProviders } = await import('../src/shared/types')
 
 interface FakeResponse {
   status?: number
@@ -445,6 +450,94 @@ describe('the Anthropic wire', () => {
   })
 })
 
+/**
+ * The refusal that is about money, not about the request.
+ *
+ * A credit-metered gateway reserves a call's whole `max_tokens` before it runs
+ * anything, so an account with a little credit left refuses a request whose
+ * answer would have used a fraction of the reservation. Reported raw, that
+ * reads as "your request was too big" about a request that was not.
+ */
+describe('a balance too thin to reserve the ceiling', () => {
+  const outOfCredit = (affordable: number) => ({
+    status: 402,
+    text: JSON.stringify({
+      error: {
+        message:
+          'This request requires more credits, or fewer max_tokens. You requested up to 32768 tokens, but can only afford ' +
+          `${affordable}.`
+      }
+    })
+  })
+
+  it('re-asks for exactly what the balance covers, and gets the plan', async () => {
+    const fetchMock = mockFetch([outOfCredit(12_000), { body: chatReply(TOPICS_JSON) }])
+
+    await expect(
+      plan(goalsOn('openrouter'), 'google/gemini-2.5-flash-lite')
+    ).resolves.toHaveLength(1)
+
+    // Not a blind retry: the second ask is the provider's own figure, so it is
+    // known to fit rather than guessed at.
+    expect(sentTo(fetchMock, 0).body.max_completion_tokens).toBe(32_768)
+    expect(sentTo(fetchMock, 1).body.max_completion_tokens).toBe(12_000)
+  })
+
+  it('stops rather than ask for less than the job can be done in', async () => {
+    const fetchMock = mockFetch([outOfCredit(400)])
+
+    const error = await plan(goalsOn('openrouter'), 'x/y').catch(
+      (e: unknown) => e
+    )
+
+    // 400 tokens cannot hold a curriculum, and an answer cut off halfway is
+    // the same failure with a more confusing explanation.
+    expect((error as { kind: string }).kind).toBe('credit')
+    expect((error as Error).message).toMatch(/reserves its whole output ceiling/i)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send a credit refusal round the field-dropping loop', async () => {
+    // Some gateways say 400 for this. Every retreat spent looking for the
+    // offending parameter is a request the balance still cannot pay for.
+    const fetchMock = mockFetch([
+      {
+        status: 400,
+        text: JSON.stringify({
+          error: { message: 'Your credit balance is too low to access this model.' }
+        })
+      }
+    ])
+
+    await expect(plan(goalsOn('openrouter'), 'x/y')).rejects.toMatchObject({
+      kind: 'credit'
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not wait out a quota that no amount of waiting refills', async () => {
+    // OpenAI says 429 for an unpaid account, which is the status for "come
+    // back later" — but this one never clears on its own.
+    const fetchMock = mockFetch([
+      {
+        status: 429,
+        text: JSON.stringify({
+          error: {
+            message:
+              'You exceeded your current quota, please check your plan and billing details.',
+            type: 'insufficient_quota'
+          }
+        })
+      }
+    ])
+
+    await expect(plan(goalsOn('openai'), 'gpt-5')).rejects.toMatchObject({
+      kind: 'credit'
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('a rate limit stated in a header', () => {
   it('is honoured rather than retried on our own schedule', async () => {
     const fetchMock = mockFetch([
@@ -457,5 +550,131 @@ describe('a rate limit stated in a header', () => {
       plan(goalsOn('xai'), 'grok-4')
     ).rejects.toThrow(/about 90s/)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * The video slot.
+ *
+ * Its own key, its own provider, and its own model list — and the list is an
+ * allowlist rather than the inverse of `NON_TEXT`. Those two are answering
+ * different questions ("can this hold a conversation" versus "can this make a
+ * clip we know how to collect"), so a model excluded from one must not fall
+ * into the other by default. An embedding model is the case that proves it.
+ */
+describe('the video slot', () => {
+  const modelList = {
+    models: [
+      {
+        name: 'models/veo-3.0-generate-001',
+        displayName: 'Veo 3',
+        supportedGenerationMethods: ['predictLongRunning']
+      },
+      {
+        name: 'models/gemini-2.5-flash',
+        displayName: 'Gemini 2.5 Flash',
+        supportedGenerationMethods: ['generateContent']
+      },
+      {
+        name: 'models/text-embedding-004',
+        displayName: 'Embeddings',
+        supportedGenerationMethods: ['embedContent']
+      },
+      {
+        // Advertised but not drivable by this file — it cannot be submitted to
+        // predictLongRunning, so offering it would be offering a broken button.
+        name: 'models/veo-2.0-preview',
+        displayName: 'Veo 2 preview',
+        supportedGenerationMethods: ['generateContent']
+      }
+    ]
+  }
+
+  it('offers Veo and only Veo', async () => {
+    mockFetch([{ body: modelList }])
+    const db = configureSlot(makeDb(), 'video', 'gemini')
+
+    const models = await providers.listModels(db, 'video')
+
+    expect(models.map((m) => m.id)).toEqual(['veo-3.0-generate-001'])
+  })
+
+  it('still offers text models to a text slot from the same list', () => {
+    // The two filters are independent, which is the whole point of them being
+    // two filters. Asserted on the regexes directly so a change to either one
+    // has to state which question it is answering.
+    expect(NON_TEXT.test('veo-3.0-generate-001')).toBe(true)
+    expect(NON_TEXT.test('gemini-2.5-flash')).toBe(false)
+    expect(isVideoModel('veo-3.0-generate-001')).toBe(true)
+    expect(isVideoModel('gemini-2.5-flash')).toBe(false)
+    // Excluded from text, and still not video.
+    expect(NON_TEXT.test('text-embedding-004')).toBe(true)
+    expect(isVideoModel('text-embedding-004')).toBe(false)
+  })
+
+  it('names the vendor mismatch rather than letting the call 404', async () => {
+    // Two gates, and this one fires first: a slot set to OpenAI has no OpenAI
+    // key to borrow, because a key is only meaningful to the vendor it came
+    // from. The message says so instead of reporting a rejected key.
+    const db = configureSlot(makeDb(), 'video', 'openai')
+    await expect(providers.listModels(db, 'video')).rejects.toThrow(
+      /set to OpenAI.*Google Gemini/s
+    )
+  })
+
+  it('refuses Veo on a non-Google context even when a key resolves', async () => {
+    // The second gate, asserted directly because the first one shadows it
+    // through `listModels`. Without this, an OpenAI base URL would be sent
+    // `:predictLongRunning` and answer 404 — which reads as a missing model
+    // rather than as a slot pointed at a vendor that has no Veo.
+    await expect(
+      listVideoModels({
+        provider: 'openai',
+        label: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'test-key'
+      })
+    ).rejects.toThrow(/Veo/)
+  })
+})
+
+/**
+ * Video is a registry, not a hardcoded vendor.
+ *
+ * The distinction that matters to a user: most providers here route *language*
+ * models and have no video endpoint at all, so a key that works perfectly for
+ * prompts cannot generate a clip however the slot is configured. Left to fail
+ * on the wire that arrives as a 404 about a missing model, which sends people
+ * looking for the wrong problem — so it is refused up front, by name.
+ */
+describe('which providers can generate video', () => {
+  it('routes a provider with a video dialect to its adapter', () => {
+    expect(providers.videoAdapterFor('gemini')).toBeDefined()
+    expect(PROVIDER_INFO.gemini.videoWire).toBe('veo')
+  })
+
+  it('refuses a language-only provider and names the ones that work', () => {
+    // OpenRouter is the case that prompted this: a perfectly good key, in the
+    // default slot, that cannot make video because OpenRouter does not serve
+    // video models at all.
+    expect(() => providers.videoAdapterFor('openrouter')).toThrow(
+      /does not generate video/i
+    )
+    expect(() => providers.videoAdapterFor('openrouter')).toThrow(
+      /Google Gemini/
+    )
+    for (const p of ['groq', 'deepseek', 'mistral', 'anthropic'] as const) {
+      expect(() => providers.videoAdapterFor(p)).toThrow(/video/i)
+    }
+  })
+
+  it('lists the video-capable providers from the table, not a second list', () => {
+    // Derived, so adding an adapter cannot leave the error message stale.
+    expect(videoProviders()).toEqual(
+      (Object.keys(PROVIDER_INFO) as Array<keyof typeof PROVIDER_INFO>).filter(
+        (p) => PROVIDER_INFO[p].videoWire !== null
+      )
+    )
+    expect(videoProviders()).toContain('gemini')
   })
 })
