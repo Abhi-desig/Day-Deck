@@ -17,6 +17,10 @@ import {
   groupRefsByFrame,
   type BoardGraphInput
 } from '../src/renderer/src/lib/board-graph'
+import {
+  GROUP_MAX_H,
+  GROUP_MIN_H
+} from '../src/renderer/src/sections/Storyboards/nodes/types'
 
 /**
  * The store-rows-to-graph mapping, asserted without a DOM.
@@ -323,6 +327,30 @@ describe('the scene container', () => {
     expect(group?.style?.pointerEvents).toBe('all')
     expect(group?.draggable).toBe(false)
     expect(group?.deletable).toBe(false)
+  })
+
+  /**
+   * The box grows with the list, up to a ceiling.
+   *
+   * It used to be one fixed height for every board, so three scenes got a
+   * mostly-empty box and thirty got a two-row porthole onto a list that exists
+   * to be read top to bottom.
+   */
+  it('sizes itself on how many scenes there are', () => {
+    const heightOf = (count: number): number => {
+      const group = buildBoardNodes(
+        stacked({
+          frames: Array.from({ length: count }, (_, i) => frame(`f${i}`))
+        })
+      ).find((n) => n.type === 'group')
+      return group?.style?.height as number
+    }
+
+    expect(heightOf(0)).toBe(GROUP_MIN_H)
+    expect(heightOf(3)).toBeGreaterThan(GROUP_MIN_H)
+    expect(heightOf(8)).toBeGreaterThan(heightOf(3))
+    // Past the ceiling the body scrolls rather than the board growing forever.
+    expect(heightOf(40)).toBe(GROUP_MAX_H)
   })
 
   it('collapses the spine to a single edge', () => {

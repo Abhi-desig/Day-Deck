@@ -161,9 +161,9 @@ describe('round trip', () => {
     const empty = makeDb()
     const summary = importBackup(db, JSON.stringify(exportBackup(empty, '0.1.0')))
 
-    // Everything a fresh database seeds: three weekly templates and the one
-    // starter Amber tag from v6.
-    expect(summary.total).toBe(4)
+    // Everything a fresh database seeds: three weekly templates, the one
+    // starter Amber tag from v6, and the eighteen named looks from v14.
+    expect(summary.total).toBe(22)
     expect(curricula.listActive(db)).toHaveLength(0)
     expect(stickers.listStickers(db)).toHaveLength(0)
     expect(slots.listRange(db, '2026-08-01', '2026-08-31')

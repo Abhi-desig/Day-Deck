@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { OMNI_DURATIONS, type StoryFrame } from '@shared/types'
+import { OMNI_DURATIONS, type StoryFrame, type StoryTake } from '@shared/types'
 import { cn } from '../../../lib/cn'
 import { copyText } from '../../../lib/clipboard'
 import { goalStyle } from '../../../lib/goalColor'
@@ -154,7 +154,54 @@ export function PromptBlock({
   )
 }
 
+/* ------------------------------------------------------------- the takes */
+
+/**
+ * The clips for one scene, asked for once.
+ *
+ * `undefined` means never loaded, which is a different thing from "none" — so a
+ * scene with no takes is asked about once and never again. A hook rather than an
+ * effect inside `TakeControls` because the collapsed row needs the count too,
+ * and a summary that says "no takes" until you open the row is a summary that
+ * lies.
+ */
+function useFrameTakes(frameId: string): StoryTake[] {
+  const takes = useTakes((s) => s.byFrame[frameId])
+  const load = useTakes((s) => s.load)
+
+  useEffect(() => {
+    if (takes === undefined) void load(frameId)
+  }, [takes, load, frameId])
+
+  return takes ?? []
+}
+
 /* --------------------------------------------------------------- the row */
+
+/**
+ * What state this scene is in, in three words.
+ *
+ * The collapsed row's whole job. Reading a board top to bottom is mostly
+ * answering "what still needs doing", and before this you had to open every
+ * scene in turn to find out — the information was all on screen and none of it
+ * was legible at a glance.
+ */
+function statusOf(
+  frame: StoryFrame,
+  takeCount: number,
+  generating: boolean
+): { text: string; tone: string } {
+  if (generating) return { text: 'generating…', tone: 'text-amber-soft' }
+  if (frame.isFinal) return { text: '✓ final', tone: 'text-cat-learn' }
+  if (takeCount > 0) {
+    return {
+      text: `${takeCount} ${takeCount === 1 ? 'take' : 'takes'}`,
+      tone: 'text-ink-dim'
+    }
+  }
+  if (frame.prompt.trim()) return { text: 'prompt ready', tone: 'text-ink-dim' }
+  return { text: 'no prompt', tone: 'text-ink-faint' }
+}
 
 /**
  * One scene as a row inside the container.
@@ -163,15 +210,32 @@ export function PromptBlock({
  * lands on the scene it belongs to rather than on the box — the mirror image of
  * what `ListNode`'s rows do on the source side. The handle id is the frame id,
  * which is the whole mechanism: `onConnect` reads it back to know which scene
- * was wired.
+ * was wired. The handle is rendered whether the row is open or shut, because a
+ * wire that disappears when you collapse a scene is a wire you have lost.
+ *
+ * Open and shut is the change that makes the container worth using. Every row
+ * used to be a full editor — title, description, references, prompt, clip strip
+ * and four controls, around 250 pixels each — so a box tall enough to show two
+ * scenes was being asked to present a list of twelve. Shut, a row is one line of
+ * title and one of description with its state on the right; open, it is exactly
+ * the editor it always was.
  */
-export function SceneRow({ frame, index, refs }: SceneData) {
+export function SceneRow({
+  frame,
+  index,
+  refs,
+  expanded,
+  onToggle
+}: SceneData & { expanded: boolean; onToggle(): void }) {
   const patchFrame = useStoryboards((s) => s.patchFrame)
   const removeFrame = useStoryboards((s) => s.removeFrame)
   const sceneNumbers = usePrefs((s) => s.sceneNumbers)
+  const busyFrameId = useTakes((s) => s.busyFrameId)
 
+  const takes = useFrameTakes(frame.id)
   const style = goalStyle(frame.color)
   const label = sceneLabel(frame, index)
+  const status = statusOf(frame, takes.length, busyFrameId === frame.id)
 
   return (
     <div
@@ -179,7 +243,10 @@ export function SceneRow({ frame, index, refs }: SceneData) {
       // right scene — the container is one node, so the event cannot say which
       // row it came from any other way.
       data-scene-id={frame.id}
-      className="group/row relative border-b border-line-soft/50 px-2.5 py-2 last:border-b-0 hover:bg-hover/40"
+      className={cn(
+        'group/row relative border-b border-line-soft/50 last:border-b-0',
+        expanded ? 'bg-hover/20' : 'hover:bg-hover/40'
+      )}
     >
       <Handle
         type="target"
@@ -189,7 +256,33 @@ export function SceneRow({ frame, index, refs }: SceneData) {
         className="!left-0 !size-2.5 !border-line !bg-surface"
       />
 
-      <header className="flex items-center gap-2 pb-1">
+      <header className="flex items-center gap-2 px-2.5 py-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${label}` : `Open ${label}`}
+          className="nodrag grid size-4 shrink-0 place-items-center rounded text-ink-faint transition-colors hover:bg-line hover:text-ink"
+        >
+          <svg
+            viewBox="0 0 16 16"
+            aria-hidden
+            className={cn(
+              'size-2.5 transition-transform duration-150',
+              expanded && 'rotate-90'
+            )}
+          >
+            <path
+              d="M6 3l5 5-5 5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+
         {sceneNumbers ? (
           <span
             title={`Scene ${index + 1}`}
@@ -205,18 +298,41 @@ export function SceneRow({ frame, index, refs }: SceneData) {
           <span className={cn('size-1.5 shrink-0 rounded-full', style.dot)} />
         )}
 
-        <Field
-          value={frame.title}
-          placeholder={label}
-          onCommit={(title) => void patchFrame(frame.id, { title })}
-          className={cn(
-            'nodrag min-w-0 flex-1 text-[12.5px]',
-            isAutoNamed(frame)
-              ? 'text-ink placeholder:!text-ink placeholder:!opacity-100'
-              : 'text-ink'
-          )}
-        />
+        {expanded ? (
+          <Field
+            value={frame.title}
+            placeholder={label}
+            onCommit={(title) => void patchFrame(frame.id, { title })}
+            className={cn(
+              'nodrag min-w-0 flex-1 text-[12.5px]',
+              isAutoNamed(frame)
+                ? 'text-ink placeholder:!text-ink placeholder:!opacity-100'
+                : 'text-ink'
+            )}
+          />
+        ) : (
+          // Shut, the title is a label rather than a field: it makes the whole
+          // line one click target, and it stops a stray click in a list you are
+          // reading from putting a cursor into a name you did not mean to edit.
+          <button
+            type="button"
+            onClick={onToggle}
+            title={frame.description || label}
+            className="nodrag min-w-0 flex-1 truncate text-left text-[12.5px] text-ink"
+          >
+            {frame.title.trim() || label}
+          </button>
+        )}
+
+        <span
+          className={cn('shrink-0 text-[10px] tabular-nums', status.tone)}
+          title="What this shot still needs"
+        >
+          {status.text}
+        </span>
+
         <DurationPicker frame={frame} />
+
         <button
           type="button"
           onClick={() => void removeFrame(frame.id)}
@@ -234,21 +350,39 @@ export function SceneRow({ frame, index, refs }: SceneData) {
         </button>
       </header>
 
-      <div className="flex flex-col gap-1.5 pl-[26px]">
-        <Field
-          multiline
-          value={frame.description}
-          placeholder="What happens in this shot…"
-          onCommit={(description) => void patchFrame(frame.id, { description })}
-          className="nodrag nowheel max-h-[92px] min-h-[30px] text-[12px] leading-relaxed text-ink-dim"
-        />
+      {expanded ? (
+        <div className="flex flex-col gap-1.5 px-2.5 pb-2.5 pl-[46px]">
+          <Field
+            multiline
+            value={frame.description}
+            placeholder="What happens in this shot…"
+            onCommit={(description) =>
+              void patchFrame(frame.id, { description })
+            }
+            className="nodrag nowheel max-h-[110px] min-h-[30px] text-[12px] leading-relaxed text-ink-dim"
+          />
 
-        <RefStrip frameId={frame.id} refs={refs} size={28} />
+          <RefStrip frameId={frame.id} refs={refs} size={28} />
 
-        <PromptBlock frame={frame} nodeId={`scene:${frame.id}`} />
+          <PromptBlock frame={frame} nodeId={`scene:${frame.id}`} />
 
-        <TakeControls frame={frame} />
-      </div>
+          <TakeControls frame={frame} />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="nodrag block w-full truncate px-2.5 pb-2 pl-[46px] text-left text-[11.5px] leading-tight text-ink-faint"
+        >
+          {frame.description.trim() || 'No description yet'}
+          {refs.length > 0 && (
+            <span className="text-ink-faint/70">
+              {' · '}
+              {refs.length} {refs.length === 1 ? 'reference' : 'references'}
+            </span>
+          )}
+        </button>
+      )}
     </div>
   )
 }
@@ -261,8 +395,7 @@ export function SceneRow({ frame, index, refs }: SceneData) {
  * you will generate the wrong one of.
  */
 export function TakeControls({ frame }: { frame: StoryFrame }) {
-  const takes = useTakes((s) => s.byFrame[frame.id])
-  const loadTakes = useTakes((s) => s.load)
+  const takes = useFrameTakes(frame.id)
   const generate = useTakes((s) => s.generate)
   const choose = useTakes((s) => s.choose)
   const removeTake = useTakes((s) => s.remove)
@@ -272,12 +405,6 @@ export function TakeControls({ frame }: { frame: StoryFrame }) {
 
   const [note, setNote] = useState(frame.revisionNote)
   const [revising, setRevising] = useState(false)
-
-  // `undefined` means never loaded, which is a different thing from "none" —
-  // so a scene with no takes is asked about once and never again.
-  useEffect(() => {
-    if (takes === undefined) void loadTakes(frame.id)
-  }, [takes, loadTakes, frame.id])
 
   const mine = busyFrameId === frame.id
   const blocked = busyFrameId !== null && !mine
@@ -304,14 +431,18 @@ export function TakeControls({ frame }: { frame: StoryFrame }) {
   return (
     <div className="flex flex-col gap-1.5">
       <TakeStrip
-        takes={takes ?? []}
+        takes={takes}
         progress={mine ? progress : null}
         busy={mine}
         onChoose={(id) => void choose(id, frame.id)}
         onDelete={(id) => void removeTake(id, frame.id)}
       />
 
-      <div className="flex items-center gap-1.5">
+      {/* Wraps, because this same bar is drawn inside a 300-pixel canvas card
+          as well as inside the container. Unwrapped, the revision note there
+          was squeezed to about forty pixels — a text field you cannot read
+          what you typed into. */}
+      <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           onClick={() => void generate(frame.id, { takes: 1 })}
@@ -335,7 +466,7 @@ export function TakeControls({ frame }: { frame: StoryFrame }) {
             if (e.key === 'Enter') void revise()
           }}
           placeholder="Make it slower and colder…"
-          className="nodrag min-w-0 flex-1 rounded border border-line-soft bg-transparent px-1.5 py-0.5 text-[10.5px] text-ink-dim outline-none transition-colors placeholder:text-ink-faint hover:border-line focus:border-amber/40"
+          className="nodrag min-w-[132px] flex-1 rounded border border-line-soft bg-transparent px-1.5 py-0.5 text-[10.5px] text-ink-dim outline-none transition-colors placeholder:text-ink-faint hover:border-line focus:border-amber/40"
         />
 
         <button

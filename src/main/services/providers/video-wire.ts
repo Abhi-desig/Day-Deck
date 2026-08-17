@@ -22,6 +22,17 @@ import type { CallContext } from './http'
  * arrangement text providers already have.
  */
 export interface VideoAdapter {
+  /**
+   * How many clips one submission can produce here.
+   *
+   * Stated rather than assumed because the vendors genuinely differ: Veo takes
+   * a `sampleCount` and returns that many samples from one operation, where
+   * OpenAI's `/videos` creates exactly one video per request. Sent blindly, a
+   * `sampleCount` of three reaches the second as an ignored field — the request
+   * succeeds and quietly returns one clip, which is the wrong number to
+   * discover from a bill. The caller clamps to this instead.
+   */
+  readonly maxSamples: number
   /** The models this provider will actually accept a generation on. */
   listModels(ctx: CallContext): Promise<AiModel[]>
   /** Start the work. Returns as soon as it is queued, not when it is done. */

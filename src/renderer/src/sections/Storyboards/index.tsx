@@ -108,6 +108,21 @@ export function Storyboards() {
   useEffect(() => useTakes.getState().listen(), [])
 
   /**
+   * Why a generation failed.
+   *
+   * Read here rather than in the row that started it, and it is the fix for
+   * "Generate does nothing": the store has always recorded the reason, and
+   * nothing has ever rendered it. A missing video key, a slot pointed at a
+   * provider that makes no video, a refused model — every one of them set this
+   * string, cleared the busy flag, and left the button looking untouched. The
+   * banner belongs at the section rather than on the card because a scene row
+   * inside the stacked container is 40 pixels tall and an explanation of a
+   * billing refusal is not.
+   */
+  const takeError = useTakes((s) => s.error)
+  const dismissTakeError = useTakes((s) => s.dismissError)
+
+  /**
    * A row asked for a revision.
    *
    * The propose/approve/apply path is deliberately the same one the toolbar's
@@ -520,7 +535,8 @@ export function Storyboards() {
       {[
         { text: error, dismiss: dismissError },
         { text: styleError, dismiss: dismissStyleError },
-        { text: planError, dismiss: () => setPlanError(null) }
+        { text: planError, dismiss: () => setPlanError(null) },
+        { text: takeError, dismiss: dismissTakeError }
       ].map(
         ({ text, dismiss }) =>
           text && (

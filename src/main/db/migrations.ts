@@ -5,6 +5,8 @@
  * Kept as inline SQL rather than .sql files so the main-process bundle has no
  * runtime asset resolution to get wrong once packaged into an asar.
  */
+import { stylePackMigration } from './style-pack'
+
 export const MIGRATIONS: readonly string[] = [
   /* ---------------------------------------------------------- v1: schema */
   `
@@ -574,5 +576,14 @@ export const MIGRATIONS: readonly string[] = [
     created_at TEXT NOT NULL
   );
   CREATE INDEX idx_sb_cut_segments_cut ON storyboard_cut_segments(cut_id);
-  `
+  `,
+
+  /* v14 — the eighteen named looks, seeded into the style library.
+   *
+   * A migration rather than a startup seed on purpose: this runs exactly once
+   * per database, so a look the user deletes stays deleted instead of coming
+   * back every launch. Each insert skips a name the library already has, which
+   * is what makes it safe to run against a library someone has been typing
+   * their own styles into. */
+  stylePackMigration()
 ]

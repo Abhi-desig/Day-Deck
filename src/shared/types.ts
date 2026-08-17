@@ -833,6 +833,20 @@ export interface AiProviderInfo {
    * a broken app. Empty means "there is no sensible guess — pick one".
    */
   defaultModel: string
+  /**
+   * The same, for the video slot — and the reason it is a second field.
+   *
+   * A chat model id is not a video model id anywhere, so falling back to
+   * `defaultModel` for a generation meant sending `gemini-3.5-flash` to a
+   * video endpoint. That is a 404 about a missing model on a slot the user
+   * never touched, which is exactly how Generate came to look broken on a
+   * perfectly good key: the only way to make it work was to know to open
+   * Settings and pick a Veo model by hand.
+   *
+   * Empty means "no guess" — a `custom` server could be serving anything, and
+   * an invented id there would 404 just as loudly.
+   */
+  defaultVideoModel: string
   /** How to recognise the key, so a pasted wrong-vendor key is caught early. */
   keyHint: string
   docsUrl: string
@@ -860,8 +874,15 @@ export interface AiProviderInfo {
  * provider that speaks an existing one is a line in `PROVIDER_INFO`; adding one
  * that speaks its own is an adapter beside `providers/veo.ts` and a name here —
  * the same two-tier arrangement `AiWire` already has for text.
+ *
+ * `sora` is OpenAI's `/videos` resource, and it is the second dialect rather
+ * than a flavour of the first for the same reason `anthropic` is not a flavour
+ * of `openai`: Google submits to `:predictLongRunning` and hands back an
+ * operation whose response names a download URI, where OpenAI creates a video
+ * object with its own id and status and serves the bytes from a sub-path of it.
+ * Nothing about one shape can be reached from the other.
  */
-export const VIDEO_WIRES = ['veo'] as const
+export const VIDEO_WIRES = ['veo', 'sora'] as const
 
 export type VideoWire = (typeof VIDEO_WIRES)[number]
 
@@ -877,6 +898,7 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     defaultModel: 'gemini-3.5-flash',
+    defaultVideoModel: 'veo-3.0-generate-001',
     keyHint: 'AIza…',
     docsUrl: 'https://aistudio.google.com/apikey',
     videoWire: 'veo'
@@ -886,15 +908,17 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-5',
+    defaultVideoModel: 'sora-2',
     keyHint: 'sk-…',
     docsUrl: 'https://platform.openai.com/api-keys',
-    videoWire: null
+    videoWire: 'sora'
   },
   anthropic: {
     label: 'Anthropic',
     wire: 'anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
     defaultModel: 'claude-sonnet-4-5',
+    defaultVideoModel: '',
     keyHint: 'sk-ant-…',
     docsUrl: 'https://console.anthropic.com/settings/keys',
     videoWire: null
@@ -904,6 +928,7 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: 'https://api.x.ai/v1',
     defaultModel: 'grok-4',
+    defaultVideoModel: '',
     keyHint: 'xai-…',
     docsUrl: 'https://console.x.ai',
     videoWire: null
@@ -913,6 +938,7 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: 'https://api.groq.com/openai/v1',
     defaultModel: '',
+    defaultVideoModel: '',
     keyHint: 'gsk_…',
     docsUrl: 'https://console.groq.com/keys',
     videoWire: null
@@ -922,6 +948,7 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: 'https://api.deepseek.com/v1',
     defaultModel: 'deepseek-chat',
+    defaultVideoModel: '',
     keyHint: 'sk-…',
     docsUrl: 'https://platform.deepseek.com/api_keys',
     videoWire: null
@@ -931,6 +958,7 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: 'https://api.mistral.ai/v1',
     defaultModel: 'mistral-large-latest',
+    defaultVideoModel: '',
     keyHint: '',
     docsUrl: 'https://console.mistral.ai/api-keys',
     videoWire: null
@@ -940,6 +968,7 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: '',
+    defaultVideoModel: '',
     keyHint: 'sk-or-…',
     docsUrl: 'https://openrouter.ai/keys',
     videoWire: null
@@ -949,9 +978,18 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     wire: 'openai',
     baseUrl: '',
     defaultModel: '',
+    // No guess, deliberately: a custom server is whatever the user pointed it
+    // at, and a made-up id here would 404 rather than help.
+    defaultVideoModel: '',
     keyHint: '',
     docsUrl: '',
-    videoWire: null
+    // The `/videos` dialect, on the theory that a custom base URL means the
+    // user knows what is behind it — a gateway that proxies Sora, or a
+    // self-hosted server that implements the same resource. A server that does
+    // not have it answers 404 with a message that names the endpoint, which is
+    // a better outcome than a Generate button that is disabled with no reason
+    // given.
+    videoWire: 'sora'
   }
 }
 

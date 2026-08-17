@@ -247,6 +247,11 @@ export async function fetchBytes(
  * `:predictLongRunning` to a host that has never had that path.
  */
 export const veoVideo: VideoAdapter = {
+  // One operation, up to four samples — which is more than MAX_TAKES asks for,
+  // so this ceiling never actually bites here. It is stated anyway because the
+  // caller has to read it off *some* adapter, and a number only present on the
+  // adapters that need it is a number that gets forgotten.
+  maxSamples: 4,
   listModels: listVideoModels,
   submit,
   poll,
