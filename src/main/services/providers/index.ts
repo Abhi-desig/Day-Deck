@@ -16,6 +16,7 @@ import type { JsonRequest, TextRequest, WireAdapter } from './wire'
 import { anthropicWire } from './anthropic'
 import { geminiWire } from './gemini'
 import { openaiWire } from './openai'
+import { soraVideo } from './sora'
 import { veoVideo } from './veo'
 import type { VideoAdapter } from './video-wire'
 
@@ -181,16 +182,25 @@ function resolveKey(db: Db, config: SlotConfig): string {
  * only ever a guess that saves a first-run round trip. Providers with no
  * sensible guess (OpenRouter, a custom server) say so rather than inventing an
  * id that would 404.
+ *
+ * The video slot falls back to a *video* default, which is the whole reason
+ * `defaultVideoModel` exists. It used to share `defaultModel` with every other
+ * slot, so an install that had never opened Settings sent `gemini-3.5-flash` to
+ * a video endpoint and got a 404 about a missing model — on a slot nobody had
+ * configured, for a button that looked like it should just work.
  */
 export function modelFor(db: Db, slot: KeySlot): string {
   const config = slotConfig(db, slot)
   if (config.model) return config.model
 
   const info = PROVIDER_INFO[config.provider]
-  if (info.defaultModel) return info.defaultModel
+  const fallback = slot === 'video' ? info.defaultVideoModel : info.defaultModel
+  if (fallback) return fallback
 
   throw new AiError(
-    `No model is chosen for the ${slot} slot. Pick one from the ${info.label} list in Settings.`,
+    slot === 'video'
+      ? `No video model is chosen for the video slot, and ${info.label} has no default worth guessing. Pick one from the video slot's model list in Settings.`
+      : `No model is chosen for the ${slot} slot. Pick one from the ${info.label} list in Settings.`,
     'config'
   )
 }
@@ -218,7 +228,8 @@ const adapterFor = (provider: AiProvider): WireAdapter =>
  * beside `veo.ts` when it speaks its own.
  */
 const VIDEO_WIRE_ADAPTERS: Record<VideoWire, VideoAdapter> = {
-  veo: veoVideo
+  veo: veoVideo,
+  sora: soraVideo
 }
 
 /**

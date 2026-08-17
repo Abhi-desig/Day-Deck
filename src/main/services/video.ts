@@ -107,12 +107,16 @@ export async function generate(
     )
   }
 
-  const takes = clampTakes(options.takes ?? 1)
   const ctx = callContext(db, 'video')
   // Resolved before the job row is written, so a slot pointed at a provider
   // that makes no video fails with a sentence and leaves nothing behind.
   const wire = videoAdapterFor(ctx.provider)
   const model = modelFor(db, 'video')
+  // Two ceilings, and the provider's is the one that can surprise you: Veo
+  // returns as many samples as one operation was asked for, where OpenAI's
+  // `/videos` makes exactly one video per request. Asking for three there and
+  // silently receiving one would be a shortfall on something metered.
+  const takes = Math.min(clampTakes(options.takes ?? 1), wire.maxSamples)
 
   const job = createJob(db, {
     boardId: board.id,

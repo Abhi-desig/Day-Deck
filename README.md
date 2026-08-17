@@ -159,9 +159,21 @@ key that works perfectly for prompts cannot generate a clip however it is
 configured. The app says that, and names the providers that can, instead of
 letting the call 404 about a missing model.
 
-Today: **Google Veo**, via the Gemini API, and it needs a key with billing
-enabled. Adding another is one adapter file beside `providers/veo.ts` plus a name
-in `VIDEO_WIRES`.
+Two dialects today. **Google Veo** via the Gemini API (`providers/veo.ts`), and
+**OpenAI's `/videos`** resource (`providers/sora.ts`), which `custom` also
+speaks — a gateway or self-hosted server that implements the same resource works
+without a code change. Both need a key with billing enabled. Adding a third is
+one adapter file beside those two plus a name in `VIDEO_WIRES`.
+
+The video slot has its own model fallback, `defaultVideoModel`, separate from
+the chat one. It used to share `defaultModel`, which meant a slot nobody had
+configured sent `gemini-3.5-flash` to a video endpoint — a 404 about a missing
+model, on a button that looks like it should simply work.
+
+`VideoAdapter.maxSamples` is how many clips one submission can produce: Veo
+returns up to four samples from one operation, where `/videos` makes exactly one
+per request. Stated rather than assumed, because a `sampleCount` sent to the
+second is silently ignored and the run comes back short.
 
 ## Storyboards
 
@@ -174,8 +186,13 @@ The pipeline runs prompts → clips → cut, in four stages:
 
 1. **Scenes in one container.** A board of twelve scenes is a list you read top
    to bottom, not twelve rectangles to arrange, so they stack into one box wired
-   to the brief and the spine collapses from N edges to one. Each row carries its
-   own target handle whose id is the frame id, so a reference wire still lands on
+   to the brief and the spine collapses from N edges to one. Rows open and shut:
+   shut, a row is its title, a line of description and what the shot still needs
+   (no prompt / prompt ready / N takes / final); open, it is the full editor.
+   Every row used to be that editor, so a box tall enough for two of them was
+   presenting a list of twelve. The box sizes itself on shut rows, up to a
+   ceiling, past which the body scrolls. Each row carries its own target handle
+   whose id is the frame id — open or shut — so a reference wire still lands on
    the scene it belongs to rather than on the box. The `sceneLayout` pref flips
    back to the free canvas, and nothing is rewritten by the switch — every frame
    keeps its `x/y/w/h` either way.
@@ -268,10 +285,12 @@ so all three produce identical motion.
   revision loop, the ffmpeg timeline and export, and AI-proposed cut points.
 
 Verified end to end: the full test suite, both typechecks, a packaged
-`dist:mac` build, the v11 → v13 migration against a real database, and the
-render pipeline against real media through the packaged app's own bundled
-binary. **Not verified:** live Veo generation and AI trim, which need a
-billing-enabled Google key in the `video` slot.
+`dist:mac` build, the v11 → v13 migration against a real database, the render
+pipeline against real media through the packaged app's own bundled binary, and
+the whole generation path — submit, poll, download, take row — against a local
+server speaking the `/videos` dialect. **Not verified against a real vendor:**
+Veo and Sora generation and the AI trim, which need a billing-enabled key in the
+`video` slot.
 
 Keyboard: `←` `→` swipe days, `⌘T` jump to today, `Esc` closes panels.
 Quick-add parses what you type: `09:30 Ship the deck 45m`.

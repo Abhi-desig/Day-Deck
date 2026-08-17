@@ -32,9 +32,50 @@ export const nodeId = {
  * Here rather than beside the component because the pure graph builder needs it
  * to lay the box out, and that builder is unit-tested in a node process that
  * must not have to load React Flow's component tree to do it.
+ *
+ * 620 wide, up from 460. The old width had to hold a row's control bar —
+ * Generate, a free-text revision note, Revise and Final — and the note ended up
+ * about forty pixels across, which is a text field you cannot read what you
+ * typed into. Width is the cheapest thing on an infinite canvas.
  */
-export const GROUP_W = 460
-export const GROUP_H = 560
+export const GROUP_W = 620
+
+/** An empty container: the header, and enough body to say why it is empty. */
+export const GROUP_MIN_H = 200
+
+/**
+ * How tall the container is allowed to get before it starts scrolling.
+ *
+ * A ceiling rather than a fixed height. A board of three scenes used to get the
+ * same 560-pixel box as a board of thirty, so a short board was mostly empty
+ * space and a long one was a two-scene porthole onto a list you were meant to
+ * read top to bottom.
+ */
+export const GROUP_MAX_H = 680
+
+/** The header strip: the board name, the run time, and the row controls. */
+export const GROUP_HEADER_H = 40
+
+/**
+ * One collapsed row's height.
+ *
+ * Collapsed is what the box is sized on, because collapsed is what it opens as.
+ * An expanded row is several times this and the body scrolls, which is the
+ * right way round: opening a scene to work on it should not resize the board.
+ */
+export const GROUP_ROW_H = 62
+
+/**
+ * The container's height for a given number of scenes.
+ *
+ * Pure, and in this file rather than in the component, for the same reason the
+ * width is: the graph builder lays the node out and is tested without a DOM.
+ */
+export const groupHeight = (sceneCount: number): number =>
+  Math.min(
+    GROUP_MAX_H,
+    Math.max(GROUP_MIN_H, GROUP_HEADER_H + sceneCount * GROUP_ROW_H)
+  )
 
 /** The timeline's width. Its height follows the clip strip. */
 export const TIMELINE_W = 520

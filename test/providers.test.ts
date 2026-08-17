@@ -30,6 +30,7 @@ vi.mock('../src/main/services/secrets', () => ({
 
 const providers = await import('../src/main/services/providers')
 const { listVideoModels } = await import('../src/main/services/providers/veo')
+const sora = await import('../src/main/services/providers/sora')
 const { NON_TEXT, isVideoModel } = await import(
   '../src/main/services/providers/wire'
 )
@@ -676,5 +677,161 @@ describe('which providers can generate video', () => {
       )
     )
     expect(videoProviders()).toContain('gemini')
+  })
+
+  it('routes OpenAI to its own dialect rather than to Veo', () => {
+    // The second video wire. Google was the only vendor that made video here,
+    // which meant an OpenAI key could plan a whole board and then not generate
+    // a single frame of it.
+    expect(PROVIDER_INFO.openai.videoWire).toBe('sora')
+    expect(providers.videoAdapterFor('openai')).not.toBe(
+      providers.videoAdapterFor('gemini')
+    )
+    expect(videoProviders()).toContain('openai')
+  })
+})
+
+/**
+ * The model the video slot asks for when nobody has chosen one.
+ *
+ * This is the bug that made Generate look broken rather than misconfigured. The
+ * fallback used to be the provider's *chat* default, so a fresh install sent
+ * `gemini-3.5-flash` to a video endpoint and got a 404 about a missing model —
+ * on a slot the user had never opened, for a button that looks like it should
+ * simply work.
+ */
+describe('the video slot’s model', () => {
+  it('falls back to a video model, not a chat model', () => {
+    const db = configureSlot(makeDb(), 'video', 'gemini')
+    const model = providers.modelFor(db, 'video')
+
+    expect(model).toBe(PROVIDER_INFO.gemini.defaultVideoModel)
+    expect(model).not.toBe(PROVIDER_INFO.gemini.defaultModel)
+    expect(isVideoModel(model)).toBe(true)
+  })
+
+  it('leaves every other slot on the chat default', () => {
+    const db = configureSlot(makeDb(), 'goals', 'gemini')
+    expect(providers.modelFor(db, 'goals')).toBe(
+      PROVIDER_INFO.gemini.defaultModel
+    )
+  })
+
+  it('prefers whatever the user actually picked', () => {
+    const db = configureSlot(makeDb(), 'video', 'gemini', {
+      model: 'veo-3.1-generate-001'
+    })
+    expect(providers.modelFor(db, 'video')).toBe('veo-3.1-generate-001')
+  })
+
+  it('says which list to pick from when there is no sensible guess', () => {
+    // A custom server could be serving anything, so inventing an id here would
+    // 404 just as loudly as the chat default did.
+    const db = configureSlot(makeDb(), 'video', 'custom', {
+      baseUrl: 'http://localhost:8000/v1'
+    })
+    expect(() => providers.modelFor(db, 'video')).toThrow(/video model/i)
+  })
+})
+
+/**
+ * OpenAI's `/videos` resource.
+ *
+ * Three beats like Veo and none of them the same shape: no long-running
+ * operation, an id of its own, a `status` that walks rather than a `done` flag,
+ * and bytes served from a sub-path instead of a URI the response names.
+ */
+describe('the sora video dialect', () => {
+  const ctx = {
+    provider: 'openai' as const,
+    label: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: 'test-key'
+  }
+
+  it('creates a video and follows its id', async () => {
+    const fetchMock = mockFetch([{ body: { id: 'video_123', status: 'queued' } }])
+
+    const operation = await sora.submit(ctx, {
+      model: 'sora-2',
+      prompt: 'A slow push in on a wet street',
+      durationSec: 8,
+      sampleCount: 1,
+      aspectRatio: '16:9'
+    })
+
+    expect(operation.name).toBe('video_123')
+    const sent = sentTo(fetchMock)
+    expect(sent.url).toBe('https://api.openai.com/v1/videos')
+    expect(sent.headers.authorization).toBe('Bearer test-key')
+    // Strings, both of them — this endpoint rejects the numeric form.
+    expect(sent.body.seconds).toBe('8')
+    expect(sent.body.size).toBe('1280x720')
+  })
+
+  it('reports an unfinished video as unfinished rather than empty', async () => {
+    mockFetch([{ body: { id: 'video_123', status: 'in_progress' } }])
+    expect(await sora.poll(ctx, { name: 'video_123' })).toEqual({ done: false })
+  })
+
+  it('names the clip’s own content path once it is done', async () => {
+    mockFetch([{ body: { id: 'video_123', status: 'completed' } }])
+
+    const result = await sora.poll(ctx, { name: 'video_123' })
+
+    expect(result.done).toBe(true)
+    expect(result.done && result.samples[0].uri).toBe(
+      'https://api.openai.com/v1/videos/video_123/content'
+    )
+  })
+
+  it('surfaces a failed generation as an error, not as a clip', async () => {
+    mockFetch([
+      {
+        body: {
+          id: 'video_123',
+          status: 'failed',
+          error: { message: 'content policy' }
+        }
+      }
+    ])
+    await expect(sora.poll(ctx, { name: 'video_123' })).rejects.toThrow(
+      /content policy/
+    )
+  })
+
+  it('rounds a scene length to one this provider can make', () => {
+    // The board plans in 4/6/8/10; Sora generates 4/8/12. A 6-second scene is a
+    // legal thing to plan and an illegal thing to ask for, so it is snapped —
+    // upward on a tie, because a couple of seconds of tail is one gesture in
+    // the trimmer and a truncated action is unrecoverable.
+    expect(sora.soraSeconds(4)).toBe(4)
+    expect(sora.soraSeconds(6)).toBe(8)
+    expect(sora.soraSeconds(8)).toBe(8)
+    expect(sora.soraSeconds(10)).toBe(12)
+    expect(sora.soraSeconds(null)).toBe(8)
+  })
+
+  it('turns an aspect ratio into a frame size it accepts', () => {
+    expect(sora.soraSize('16:9')).toBe('1280x720')
+    expect(sora.soraSize('9:16')).toBe('720x1280')
+    // Anything unrecognised lands on landscape rather than being passed
+    // through as a size the endpoint would refuse.
+    expect(sora.soraSize('4:3')).toBe('1280x720')
+  })
+
+  it('offers only the models it can actually drive', async () => {
+    mockFetch([
+      { body: { data: [{ id: 'sora-2' }, { id: 'gpt-5' }, { id: 'dall-e-3' }] } }
+    ])
+    const models = await sora.listVideoModels(ctx)
+    expect(models.map((m) => m.id)).toEqual(['sora-2'])
+  })
+
+  it('makes one clip per request, and says so', () => {
+    // Not a limit this app chose. Without it the caller would ask for three
+    // takes, quietly receive one, and have no way to report the shortfall on
+    // something the user is billed for.
+    expect(sora.soraVideo.maxSamples).toBe(1)
   })
 })

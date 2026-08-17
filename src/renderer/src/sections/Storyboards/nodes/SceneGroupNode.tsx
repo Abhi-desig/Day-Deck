@@ -1,9 +1,11 @@
+import { useCallback, useMemo, useState } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { FRAME_H, FRAME_W } from '@shared/types'
+import { cn } from '../../../lib/cn'
 import { boardDuration, formatDuration } from '../../../lib/scene'
 import { useStoryboards } from '../../../store/useStoryboards'
 import { SceneRow } from './SceneRow'
-import { GROUP_H, GROUP_W, HANDLE, type SceneGroupNodeType } from './types'
+import { HANDLE, type SceneGroupNodeType } from './types'
 
 /**
  * Every scene on the board, in one container.
@@ -13,16 +15,56 @@ import { GROUP_H, GROUP_W, HANDLE, type SceneGroupNodeType } from './types'
  * a scrolling box wired to the brief once, and the spine collapses from N edges
  * to one.
  *
- * Two things this must get right, both of which the free canvas got for free:
- * the body is `nowheel`, or scrolling the list pans the canvas out from under
- * the cursor; and each row carries its own target handle, or every reference
- * wire on the board lands on the same point and the graph stops being readable.
+ * The first version of that got the wiring right and the reading wrong: every
+ * row was a full editor about 250 pixels tall, so the list you were meant to
+ * read top to bottom showed two of its twelve entries. Rows now open and shut.
+ * Shut, a row is a title, a line of description and what the shot still needs;
+ * open, it is the same editor it always was. The box is sized on shut rows,
+ * which is what it opens as.
+ *
+ * Two things this must keep getting right, both of which the free canvas got
+ * for free: the body is `nowheel`, or scrolling the list pans the canvas out
+ * from under the cursor; and each row carries its own target handle — open or
+ * shut — or every reference wire on the board lands on the same point and the
+ * graph stops being readable.
  */
 export function SceneGroupNode({ data }: NodeProps<SceneGroupNodeType>) {
   const { board, scenes } = data
   const addFrame = useStoryboards((s) => s.addFrame)
 
+  /**
+   * Which rows are open.
+   *
+   * Component state rather than a preference. Which scene you are working on is
+   * a fact about the next ten minutes, not about you — and the canvas is keyed
+   * by board, so switching boards discards this along with everything else that
+   * belonged to the old one.
+   */
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+
+  const toggle = useCallback((frameId: string) => {
+    setOpen((current) => {
+      const next = new Set(current)
+      if (!next.delete(frameId)) next.add(frameId)
+      return next
+    })
+  }, [])
+
   const { seconds, undecided } = boardDuration(scenes.map((s) => s.frame))
+
+  /**
+   * What the board still needs, as one clause.
+   *
+   * Counted here rather than in a row because it is a fact about the board:
+   * "four still need prompts" is the sentence that tells you whether to press
+   * Write prompts, and no individual row can say it.
+   */
+  const needsPrompt = useMemo(
+    () => scenes.filter((s) => !s.frame.prompt.trim()).length,
+    [scenes]
+  )
+
+  const allOpen = scenes.length > 0 && open.size === scenes.length
 
   return (
     <>
@@ -40,22 +82,57 @@ export function SceneGroupNode({ data }: NodeProps<SceneGroupNodeType>) {
         className="!size-2 !border-line !bg-raised"
       />
 
+      {/* Sized by the wrapper React Flow already laid out — see `groupHeight`,
+          which follows the scene count so a short board is not a mostly-empty
+          box and a long one is not a porthole. */}
       <div
         data-node
-        style={{ width: GROUP_W, height: GROUP_H }}
-        className="flex select-none flex-col overflow-hidden rounded-xl border border-line-soft glass-flat card-shadow-soft"
+        className="flex size-full select-none flex-col overflow-hidden rounded-xl border border-line-soft glass-flat card-shadow-soft"
       >
         <header className="flex shrink-0 items-center gap-2 border-b border-line-soft/70 px-3 py-2">
-          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+          <span className="min-w-0 shrink truncate text-[12.5px] text-ink">
             {board.title || 'Scenes'}
           </span>
-          <span className="shrink-0 text-[11px] tabular-nums text-ink-faint">
+
+          <span className="min-w-0 flex-1 truncate text-[11px] tabular-nums text-ink-faint">
             {scenes.length === 0
               ? 'no scenes'
               : `${scenes.length} · ${formatDuration(seconds)}${
                   undecided > 0 ? ` +${undecided}?` : ''
                 }`}
+            {needsPrompt > 0 && (
+              <span className="text-ink-faint/70">
+                {` · ${needsPrompt} without ${
+                  needsPrompt === 1 ? 'a prompt' : 'prompts'
+                }`}
+              </span>
+            )}
           </span>
+
+          {scenes.length > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                setOpen(
+                  allOpen ? new Set() : new Set(scenes.map((s) => s.frame.id))
+                )
+              }
+              title={
+                allOpen
+                  ? 'Shut every scene back to one line'
+                  : 'Open every scene for editing'
+              }
+              className={cn(
+                'nodrag shrink-0 rounded border px-1.5 py-0.5 text-[11px] transition-colors',
+                allOpen
+                  ? 'border-line bg-raised text-ink-dim hover:text-ink'
+                  : 'border-line-soft text-ink-faint hover:border-line hover:text-ink'
+              )}
+            >
+              {allOpen ? 'Collapse all' : 'Expand all'}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() =>
@@ -85,7 +162,12 @@ export function SceneGroupNode({ data }: NodeProps<SceneGroupNodeType>) {
             </p>
           ) : (
             scenes.map((scene) => (
-              <SceneRow key={scene.frame.id} {...scene} />
+              <SceneRow
+                key={scene.frame.id}
+                {...scene}
+                expanded={open.has(scene.frame.id)}
+                onToggle={() => toggle(scene.frame.id)}
+              />
             ))
           )}
         </div>

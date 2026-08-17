@@ -283,8 +283,12 @@ describe('migrating an existing database', () => {
         `SELECT COUNT(*) AS n FROM storyboard_style_nodes`
       )
       .get()?.n
+    // By id, not by count: v14 seeds the style pack, so the library is never
+    // empty and a total would only be measuring how many looks ship.
     const library = db
-      .prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM video_styles`)
+      .prepare<[], { n: number }>(
+        `SELECT COUNT(*) AS n FROM video_styles WHERE id = 's1'`
+      )
       .get()?.n
 
     expect(placements).toBe(0)

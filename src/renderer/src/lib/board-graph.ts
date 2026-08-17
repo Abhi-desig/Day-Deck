@@ -13,8 +13,8 @@ import type {
   VideoStyle
 } from '@shared/types'
 import {
-  GROUP_H,
   GROUP_W,
+  groupHeight,
   TIMELINE_W,
   HANDLE,
   nodeId,
@@ -162,7 +162,15 @@ export function buildBoardNodes({
             // with neither selectable nor draggable, React Flow decides the node
             // needs no pointer events and stamps `pointer-events: none` on the
             // wrapper — which would make every field in every row unclickable.
-            style: { pointerEvents: 'all', width: GROUP_W, height: GROUP_H }
+            //
+            // The height follows the scene count up to a ceiling, so a board of
+            // three is not a mostly-empty box and a board of thirty is not a
+            // porthole. Past the ceiling the body scrolls.
+            style: {
+              pointerEvents: 'all',
+              width: GROUP_W,
+              height: groupHeight(scenes.length)
+            }
           }
         ]
       : scenes.map((scene) => ({

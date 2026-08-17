@@ -83,7 +83,11 @@ describe('the style library', () => {
     expect(copy.name).toBe('Urban indie copy')
     expect(copy.lens).toBe('35mm')
     expect(copy.extras).toEqual(style.extras)
-    expect(styles.listStyles(db)).toHaveLength(2)
+    // Both, side by side: duplicating adds a look rather than renaming one.
+    // Counted by name, because the library also holds the seeded style pack.
+    expect(
+      styles.listStyles(db).filter((s) => s.name.startsWith('Urban indie'))
+    ).toHaveLength(2)
   })
 })
 
@@ -140,7 +144,7 @@ describe('placing a style on a board', () => {
     styles.removeStyleNode(db, node.id)
 
     expect(styles.listStyleNodes(db, boardId)).toEqual([])
-    expect(styles.listStyles(db)).toHaveLength(1)
+    expect(styles.listStyles(db).map((s) => s.id)).toContain(styleId)
   })
 
   it('deleting the style takes it off every board', () => {

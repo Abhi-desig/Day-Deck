@@ -1,10 +1,8 @@
 import { create } from 'zustand'
 import type { StoryTake, TakeGenerateOptions, VideoJobProgress } from '@shared/types'
 import { api } from '../lib/api'
+import { errorMessage as message } from '../lib/error'
 import { useCut } from './useCut'
-
-const message = (err: unknown): string =>
-  err instanceof Error ? err.message : String(err)
 
 /**
  * Generated clips, kept apart from the board's own state.
