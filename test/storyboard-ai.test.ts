@@ -26,6 +26,7 @@ const {
 } = await import('../src/main/services/ai')
 const { AiError } = await import('../src/main/services/providers')
 const { configureSlot, makeDb } = await import('./helpers')
+const { PROCESS_DEFAULTS } = await import('../src/shared/processes')
 
 interface FakeResponse {
   status?: number
@@ -118,14 +119,14 @@ afterEach(() => {
 
 describe('the scene planning prompt', () => {
   it('carries the brief and the visual style', () => {
-    const prompt = buildScenePrompt(ARGS)
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], ARGS)
 
     expect(prompt).toContain('A student arrives in a new city')
     expect(prompt).toContain('warm, documentary')
   })
 
   it('states the supported durations and what each is for', () => {
-    const prompt = buildScenePrompt(ARGS)
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], ARGS)
 
     // The model has to know which lengths are renderable, and why it would pick
     // one over another.
@@ -137,7 +138,7 @@ describe('the scene planning prompt', () => {
   it('gives every supported duration its own guidance', () => {
     // The sentence this replaced described only the first and last lengths, so
     // adding 6 and 8 offered them with nothing said about when to use them.
-    const prompt = buildScenePrompt(ARGS)
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], ARGS)
 
     for (const seconds of OMNI_DURATIONS) {
       expect(prompt).toMatch(new RegExp(`- ${seconds}s: \\S`))
@@ -145,7 +146,7 @@ describe('the scene planning prompt', () => {
   })
 
   it('lists the cast and tells the breakdown to name them, not describe them', () => {
-    const prompt = buildScenePrompt({ ...ARGS, characters: CAST })
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], { ...ARGS, characters: CAST })
 
     expect(prompt).toContain('CAST')
     expect(prompt).toContain('Maya: 24, South Asian')
@@ -154,17 +155,17 @@ describe('the scene planning prompt', () => {
 
   it('says nothing about a cast when there is none', () => {
     // An empty heading would invite the model to invent one.
-    expect(buildScenePrompt(ARGS)).not.toContain('CAST')
+    expect(buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], ARGS)).not.toContain('CAST')
   })
 
   it('declines to write prompts — that is stage two', () => {
     // The breakdown is approved before any prompt is paid for, so the one thing
     // this prompt must not do is ask for prompts.
-    expect(buildScenePrompt(ARGS)).toMatch(/Do not write generation prompts/)
+    expect(buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], ARGS)).toMatch(/Do not write generation prompts/)
   })
 
   it('spells the style out in full when one is placed', () => {
-    const prompt = buildScenePrompt({ ...ARGS, style: style() })
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], { ...ARGS, style: style() })
 
     expect(prompt).toContain('"Urban indie"')
     expect(prompt).toContain('- Lens: 35mm anamorphic')
@@ -172,11 +173,11 @@ describe('the scene planning prompt', () => {
   })
 
   it('says nothing about a style when none is placed', () => {
-    expect(buildScenePrompt(ARGS)).not.toContain('LOOK —')
+    expect(buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], ARGS)).not.toContain('LOOK —')
   })
 
   it('lists what is already on the board, in order, flagging hand-written prompts', () => {
-    const prompt = buildScenePrompt({
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], {
       ...ARGS,
       existing: [
         { title: 'Cold open', description: 'the platform', hasPrompt: true },
@@ -189,7 +190,7 @@ describe('the scene planning prompt', () => {
   })
 
   it('offers references but does not insist on them', () => {
-    const prompt = buildScenePrompt({
+    const prompt = buildScenePrompt(PROCESS_DEFAULTS['board.scenes'], {
       ...ARGS,
       references: ['hero-plate.mp4 (video)']
     })
@@ -398,7 +399,7 @@ const PROMPT_ARGS = {
 
 describe('the prompt writing prompt', () => {
   it('carries the whole board and says which scenes to write', () => {
-    const prompt = buildPromptWriterPrompt(PROMPT_ARGS)
+    const prompt = buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)
 
     expect(prompt).toContain(
       '1. Arrival — She steps off the train. [10s] [references: platform-plate.mp4 (video)]'
@@ -410,20 +411,20 @@ describe('the prompt writing prompt', () => {
   it('forbids prompts that reference other shots', () => {
     // A prompt saying "as established" is worthless the moment it leaves the
     // app, and leaving is the entire purpose of a prompt.
-    expect(buildPromptWriterPrompt(PROMPT_ARGS)).toMatch(
+    expect(buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)).toMatch(
       /never write "as established"/i
     )
   })
 
   it('separates film-wide references from a scene\'s own', () => {
-    const prompt = buildPromptWriterPrompt(PROMPT_ARGS)
+    const prompt = buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)
 
     expect(prompt).toContain('FILM-WIDE REFERENCES')
     expect(prompt).toContain('- moodboard.png (image)')
   })
 
   it('demands the look wording stay identical across prompts', () => {
-    const prompt = buildPromptWriterPrompt({ ...PROMPT_ARGS, style: style() })
+    const prompt = buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], { ...PROMPT_ARGS, style: style() })
 
     expect(prompt).toContain('"Urban indie"')
     expect(prompt).toContain('- Lens: 35mm anamorphic')
@@ -434,7 +435,7 @@ describe('the prompt writing prompt', () => {
   it('demands a character be restated in full, not referred back to', () => {
     // The same mechanism as the look, for the other half of consistency: the
     // generator writing shot 9 has never seen shot 2.
-    const prompt = buildPromptWriterPrompt({
+    const prompt = buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], {
       ...PROMPT_ARGS,
       characters: CAST
     })
@@ -447,7 +448,7 @@ describe('the prompt writing prompt', () => {
   it('drops a half-written character rather than sending it', () => {
     // A named character with no description would have the model invent one,
     // which is the exact drift the cast exists to prevent.
-    const prompt = buildPromptWriterPrompt({
+    const prompt = buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], {
       ...PROMPT_ARGS,
       characters: [
         { name: 'Nameless', description: '' },
@@ -461,13 +462,13 @@ describe('the prompt writing prompt', () => {
   it('ties the amount of action to the scene length', () => {
     // Every scene already arrives tagged [10s]; without this the model has no
     // idea what that number implies about how much can happen.
-    expect(buildPromptWriterPrompt(PROMPT_ARGS)).toMatch(
+    expect(buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)).toMatch(
       /Match the amount of action to the length/
     )
   })
 
   it('fixes the order a prompt states things in', () => {
-    expect(buildPromptWriterPrompt(PROMPT_ARGS)).toMatch(
+    expect(buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)).toMatch(
       /subject, action, camera, lens, lighting, grade, film stock, aspect/
     )
   })

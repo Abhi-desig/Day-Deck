@@ -10,6 +10,7 @@ import type {
   CurriculumProgress,
   PtyChunk,
   PtyExit,
+  PackProgress,
   VideoJobProgress
 } from '@shared/types'
 
@@ -164,6 +165,25 @@ const api: DeckApi = {
     updateSheet: (id, patch) => ipcRenderer.invoke(IPC.sheetsUpdate, id, patch),
     deleteSheet: (id) => ipcRenderer.invoke(IPC.sheetsDelete, id),
 
+    proposePortrait: (sheetId, extra) =>
+      ipcRenderer.invoke(IPC.sheetsProposePortrait, sheetId, extra),
+    approvePortrait: (sheetId, shotId) =>
+      ipcRenderer.invoke(IPC.sheetsApprovePortrait, sheetId, shotId),
+    buildPack: (sheetId) => ipcRenderer.invoke(IPC.sheetsBuildPack, sheetId),
+    packProgress: (sheetId) =>
+      ipcRenderer.invoke(IPC.sheetsPackProgress, sheetId),
+    shots: (sheetId) => ipcRenderer.invoke(IPC.sheetsShots, sheetId),
+    discardShot: (shotId) => ipcRenderer.invoke(IPC.sheetsDiscardShot, shotId),
+    unlockSheet: (sheetId) => ipcRenderer.invoke(IPC.sheetsUnlock, sheetId),
+
+    placedCast: (boardId) => ipcRenderer.invoke(IPC.sheetsPlaced, boardId),
+    placeCast: (input) => ipcRenderer.invoke(IPC.sheetsPlace, input),
+    moveCastNode: (id, x, y) =>
+      ipcRenderer.invoke(IPC.sheetsMoveNode, id, x, y),
+    unplaceCast: (id) => ipcRenderer.invoke(IPC.sheetsUnplace, id),
+    onPackProgress: (handler) =>
+      subscribe<PackProgress>(IPC.castPackProgress, handler),
+
     pickMedia: () => ipcRenderer.invoke(IPC.mediaPick),
 
     planScenes: (boardId) => ipcRenderer.invoke(IPC.boardsPlanScenes, boardId),
@@ -232,6 +252,10 @@ const api: DeckApi = {
     models: (slot, key) => ipcRenderer.invoke(IPC.aiModels, slot, key),
     rate: () => ipcRenderer.invoke(IPC.settingsGetRate),
     setRate: (perMinute) => ipcRenderer.invoke(IPC.settingsSetRate, perMinute),
+    processes: () => ipcRenderer.invoke(IPC.settingsProcesses),
+    setProcess: (id, override) =>
+      ipcRenderer.invoke(IPC.settingsSetProcess, id, override),
+    resetProcess: (id) => ipcRenderer.invoke(IPC.settingsResetProcess, id),
     prefs: () => ipcRenderer.invoke(IPC.settingsGetPrefs),
     setTheme: (theme) => ipcRenderer.invoke(IPC.settingsSetTheme, theme),
     setSceneNumbers: (on) =>

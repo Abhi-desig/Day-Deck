@@ -26,10 +26,14 @@ interface StyleState {
   styles: VideoStyle[]
   /** Placements on the open board only. */
   placed: StoryStyleNode[]
+  /** Which board `placed` describes, so a re-visit does not re-ask. */
+  placedFor: string | null
   ready: boolean
   error: string | null
 
   load(): Promise<void>
+  /** Re-read the library whatever is held. `load` is the cached mount path. */
+  refresh(): Promise<void>
   loadPlaced(boardId: string): Promise<void>
 
   add(input: NewVideoStyle): Promise<VideoStyle | null>
@@ -50,10 +54,20 @@ interface StyleState {
 export const useStyles = create<StyleState>((set, get) => ({
   styles: [],
   placed: [],
+  placedFor: null,
   ready: false,
   error: null,
 
   async load() {
+    // Eighteen shipped looks plus whatever the user has written, re-fetched on
+    // every single visit to Storyboards for a list that changes only when they
+    // change it — and every mutation below already patches the store. `ready`
+    // is what turns the store into the cache it was always meant to be.
+    if (get().ready) return
+    return get().refresh()
+  },
+
+  async refresh() {
     try {
       set({ styles: await api.styles.list(), ready: true, error: null })
     } catch (err) {
@@ -62,8 +76,15 @@ export const useStyles = create<StyleState>((set, get) => ({
   },
 
   async loadPlaced(boardId) {
+    // Per board, and it only changes through the mutators below, so a second
+    // visit to the same board has nothing to ask about.
+    if (get().placedFor === boardId) return
     try {
-      set({ placed: await api.styles.placed(boardId), error: null })
+      set({
+        placed: await api.styles.placed(boardId),
+        placedFor: boardId,
+        error: null
+      })
     } catch (err) {
       set({ error: message(err) })
     }

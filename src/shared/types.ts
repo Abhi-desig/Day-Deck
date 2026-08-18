@@ -778,7 +778,22 @@ export const KEY_SLOTS = [
    * key that writes prompts all day is not also the key that can be charged for
    * a board's worth of generation.
    */
-  'video'
+  'video',
+  /**
+   * Generating the still images a character is locked to.
+   *
+   * Its own slot rather than a share of `video` for the reason the slots exist
+   * at all: these are two different bills. A portrait is a handful of cents and
+   * gets generated whenever someone is describing a character; a clip is
+   * metered per second and gets generated deliberately. Sharing one key would
+   * mean the casual call and the expensive one draw on the same quota, and the
+   * casual one is the one that runs in the background.
+   *
+   * It is also the only slot that can legitimately be a different vendor from
+   * `video` — a Google video key and an OpenAI image key is a perfectly
+   * sensible arrangement, and slots are what make it expressible.
+   */
+  'image'
 ] as const
 
 export type KeySlot = (typeof KEY_SLOTS)[number]
@@ -847,6 +862,17 @@ export interface AiProviderInfo {
    * an invented id there would 404 just as loudly.
    */
   defaultVideoModel: string
+  /**
+   * And the same again for the image slot.
+   *
+   * A third field rather than a reuse of either, for the reason the second one
+   * exists: an image model id is not a chat model id and is not a video model
+   * id on any provider here. `defaultVideoModel` was added because a slot
+   * nobody had configured sent `gemini-3.5-flash` to a video endpoint and 404'd
+   * on a button that looked like it should just work — an image slot falling
+   * back to either of the others reproduces that bug exactly.
+   */
+  defaultImageModel: string
   /** How to recognise the key, so a pasted wrong-vendor key is caught early. */
   keyHint: string
   docsUrl: string
@@ -865,6 +891,15 @@ export interface AiProviderInfo {
    * of failing with a 404 about a missing model.
    */
   videoWire: VideoWire | null
+  /**
+   * Which image dialect this provider speaks, or null if it makes no images.
+   *
+   * The same honest null as `videoWire`, and for the same reason: most of this
+   * table routes language models and has no image endpoint at all. Saying so
+   * here is what turns "your Groq key cannot do this" into a sentence instead
+   * of a 404 about a missing model.
+   */
+  imageWire: ImageWire | null
 }
 
 /**
@@ -886,10 +921,33 @@ export const VIDEO_WIRES = ['veo', 'sora'] as const
 
 export type VideoWire = (typeof VIDEO_WIRES)[number]
 
+/**
+ * The image protocols the app knows how to drive.
+ *
+ * A third registry rather than more methods on either existing one, because an
+ * image call is genuinely a third shape: a text call is request in, JSON out; a
+ * video call is submit → poll → download; an image call is request in, **bytes
+ * out** — no operation to follow, but a body and a response that neither of the
+ * other two can express.
+ *
+ * `openai-image` is second and is the harder one: `/images/generations` takes
+ * no reference at all, and references need `/images/edits`, which is multipart
+ * where every other call in this app is JSON.
+ */
+export const IMAGE_WIRES = ['gemini-image', 'openai-image'] as const
+
+export type ImageWire = (typeof IMAGE_WIRES)[number]
+
 /** The providers that can actually generate video, for a message that lists them. */
 export const videoProviders = (): AiProvider[] =>
   (Object.keys(PROVIDER_INFO) as AiProvider[]).filter(
     (p) => PROVIDER_INFO[p].videoWire !== null
+  )
+
+/** The same, for images. */
+export const imageProviders = (): AiProvider[] =>
+  (Object.keys(PROVIDER_INFO) as AiProvider[]).filter(
+    (p) => PROVIDER_INFO[p].imageWire !== null
   )
 
 export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
@@ -899,9 +957,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     defaultModel: 'gemini-3.5-flash',
     defaultVideoModel: 'veo-3.0-generate-001',
+    defaultImageModel: 'gemini-2.5-flash-image',
     keyHint: 'AIza…',
     docsUrl: 'https://aistudio.google.com/apikey',
-    videoWire: 'veo'
+    videoWire: 'veo',
+    imageWire: 'gemini-image'
   },
   openai: {
     label: 'OpenAI',
@@ -909,9 +969,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-5',
     defaultVideoModel: 'sora-2',
+    defaultImageModel: 'gpt-image-1',
     keyHint: 'sk-…',
     docsUrl: 'https://platform.openai.com/api-keys',
-    videoWire: 'sora'
+    videoWire: 'sora',
+    imageWire: 'openai-image'
   },
   anthropic: {
     label: 'Anthropic',
@@ -919,9 +981,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.anthropic.com/v1',
     defaultModel: 'claude-sonnet-4-5',
     defaultVideoModel: '',
+    defaultImageModel: '',
     keyHint: 'sk-ant-…',
     docsUrl: 'https://console.anthropic.com/settings/keys',
-    videoWire: null
+    videoWire: null,
+    imageWire: null
   },
   xai: {
     label: 'xAI (Grok)',
@@ -929,9 +993,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.x.ai/v1',
     defaultModel: 'grok-4',
     defaultVideoModel: '',
+    defaultImageModel: '',
     keyHint: 'xai-…',
     docsUrl: 'https://console.x.ai',
-    videoWire: null
+    videoWire: null,
+    imageWire: null
   },
   groq: {
     label: 'Groq',
@@ -939,9 +1005,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.groq.com/openai/v1',
     defaultModel: '',
     defaultVideoModel: '',
+    defaultImageModel: '',
     keyHint: 'gsk_…',
     docsUrl: 'https://console.groq.com/keys',
-    videoWire: null
+    videoWire: null,
+    imageWire: null
   },
   deepseek: {
     label: 'DeepSeek',
@@ -949,9 +1017,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.deepseek.com/v1',
     defaultModel: 'deepseek-chat',
     defaultVideoModel: '',
+    defaultImageModel: '',
     keyHint: 'sk-…',
     docsUrl: 'https://platform.deepseek.com/api_keys',
-    videoWire: null
+    videoWire: null,
+    imageWire: null
   },
   mistral: {
     label: 'Mistral',
@@ -959,9 +1029,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://api.mistral.ai/v1',
     defaultModel: 'mistral-large-latest',
     defaultVideoModel: '',
+    defaultImageModel: '',
     keyHint: '',
     docsUrl: 'https://console.mistral.ai/api-keys',
-    videoWire: null
+    videoWire: null,
+    imageWire: null
   },
   openrouter: {
     label: 'OpenRouter',
@@ -969,9 +1041,11 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: '',
     defaultVideoModel: '',
+    defaultImageModel: '',
     keyHint: 'sk-or-…',
     docsUrl: 'https://openrouter.ai/keys',
-    videoWire: null
+    videoWire: null,
+    imageWire: null
   },
   custom: {
     label: 'Custom (OpenAI-compatible)',
@@ -981,6 +1055,9 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     // No guess, deliberately: a custom server is whatever the user pointed it
     // at, and a made-up id here would 404 rather than help.
     defaultVideoModel: '',
+    // Same again: `/images/generations` is a shape a gateway may well proxy,
+    // and a guessed id would 404 rather than help.
+    defaultImageModel: '',
     keyHint: '',
     docsUrl: '',
     // The `/videos` dialect, on the theory that a custom base URL means the
@@ -989,7 +1066,9 @@ export const PROVIDER_INFO: Record<AiProvider, AiProviderInfo> = {
     // not have it answers 404 with a message that names the endpoint, which is
     // a better outcome than a Generate button that is disabled with no reason
     // given.
-    videoWire: 'sora'
+    videoWire: 'sora',
+    // And the OpenAI images dialect, on the same theory.
+    imageWire: 'openai-image'
   }
 }
 
@@ -1027,6 +1106,10 @@ export const KEY_SLOT_LABEL: Record<KeySlot, { label: string; hint: string }> = 
   video: {
     label: 'Video generation',
     hint: 'Needs a provider that makes video — metered per second of clip'
+  },
+  image: {
+    label: 'Character images',
+    hint: 'Portraits and reference angles — needs a provider that makes images'
   }
 }
 
@@ -1440,7 +1523,22 @@ export interface StoryJob {
  * places to remember to guard on `isDestroyed()`.
  */
 export type VideoJobProgress =
-  | { phase: 'submitting'; jobId: string; frameId: string }
+  | {
+      phase: 'submitting'
+      jobId: string
+      frameId: string
+      /**
+       * What the run could not honour, said before the wait starts.
+       *
+       * Non-null when more characters are locked to the board than the provider
+       * accepts references for, or when an approved portrait has gone missing
+       * from disk. Both cases still generate — the characters' descriptions
+       * travel in the prompt as they always have — but the face is not pinned,
+       * and that is the difference between this feature working and this
+       * feature looking like it works.
+       */
+      notice?: string | null
+    }
   | {
       phase: 'polling'
       jobId: string
@@ -1752,16 +1850,148 @@ export interface StorySheet {
   kind: SheetKind
   name: string
   description: string
+  /**
+   * How far this character has got towards being *fixed* rather than merely
+   * described.
+   *
+   * `described` is what a sheet has always been: words, restated in every
+   * prompt. `proposed` means at least one portrait has been generated and none
+   * approved. `locked` means one was approved, and it is the only state in
+   * which the character's image is attached to a generation — which is what
+   * makes them the same person shot to shot rather than a second person who
+   * matches the description.
+   */
+  status: SheetStatus
+  /**
+   * The words the portrait was generated from.
+   *
+   * Defaults to the description, because the description is what the character
+   * *is* and asking the user to type it twice would only produce two answers
+   * that drift. Kept as its own column so portrait-only direction — background,
+   * light, framing — can be added without leaking into every scene prompt.
+   */
+  sourcePrompt: string
+  /** The approved portrait, or null. The pointer that makes them real. */
+  portraitId: string | null
+  lockedAt: string | null
   sortIndex: number
   createdAt: string
 }
+
+export const SHEET_STATUSES = ['described', 'proposed', 'locked'] as const
+
+export type SheetStatus = (typeof SHEET_STATUSES)[number]
+
+export const isSheetStatus = (value: unknown): value is SheetStatus =>
+  (SHEET_STATUSES as readonly string[]).includes(value as string)
 
 export type NewStorySheet = Pick<StorySheet, 'boardId'> &
   Partial<Omit<StorySheet, 'id' | 'boardId' | 'createdAt'>>
 
 export type StorySheetPatch = Partial<
-  Pick<StorySheet, 'kind' | 'name' | 'description' | 'sortIndex'>
+  Pick<
+    StorySheet,
+    'kind' | 'name' | 'description' | 'sortIndex' | 'sourcePrompt'
+  >
 >
+
+/* --------------------------------------------------- the reference pack */
+
+/**
+ * The angles a character's reference pack is built from.
+ *
+ * Five, because five is what a shot can plausibly be conditioned from and each
+ * one is a metered image call. Shared so the renderer can show progress against
+ * the same list the service walks — "3 of 5" has to mean the same five in both
+ * places or the count is decoration.
+ *
+ * Every one of these is generated *from the approved portrait*, never from the
+ * description again. That is the load-bearing distinction of the whole feature:
+ * re-prompting the words produces a second person who matches the description,
+ * where passing the approved image in as a reference produces the *same* person
+ * from another angle. A pack of five plausible faces looks exactly like a pack
+ * of five shots of one face until you put two of them side by side.
+ */
+export const PACK_VIEWS = [
+  'front',
+  'three-quarter',
+  'profile',
+  'full-body',
+  'expression'
+] as const
+
+export type PackView = (typeof PACK_VIEWS)[number]
+
+export const isPackView = (value: unknown): value is PackView =>
+  (PACK_VIEWS as readonly string[]).includes(value as string)
+
+export const PACK_VIEW_LABEL: Record<PackView, string> = {
+  front: 'Front',
+  'three-quarter': 'Three-quarter',
+  profile: 'Profile',
+  'full-body': 'Full body',
+  expression: 'Expression'
+}
+
+export type SheetShotKind = 'candidate' | 'pack'
+
+/**
+ * One image generated for a character.
+ *
+ * Candidates are kept the way takes are: a generation that cost money is not
+ * thrown away by the next click. `view` is empty for a candidate and one of
+ * `PACK_VIEWS` for a pack shot.
+ *
+ * `fileName` is a basename and the id *is* the name, so no row here carries a
+ * path — there is nothing to sanitise because there is nothing to traverse.
+ */
+export interface SheetShot {
+  id: string
+  sheetId: string
+  kind: SheetShotKind
+  view: PackView | ''
+  fileName: string
+  model: string
+  prompt: string
+  /** A data: URI under the same 96KB cap as reference thumbnails. */
+  poster: string | null
+  sortIndex: number
+  createdAt: string
+}
+
+/**
+ * How a background pack build is getting on.
+ *
+ * Its own channel rather than a widening of `VideoJobProgress`. That channel is
+ * one channel because there is one long-running-work indicator in the UI — and
+ * an invisible background pack is deliberately *not* that indicator. Putting it
+ * there would light up the generation UI every few seconds for work the user
+ * was told they would not have to watch.
+ */
+export type PackProgress =
+  | { phase: 'building'; sheetId: string; done: number; total: number }
+  | { phase: 'ready'; sheetId: string; shots: SheetShot[] }
+  | { phase: 'error'; sheetId: string; message: string }
+
+/** Whether a pack has finished, in the numbers the UI renders. */
+export interface PackStatus {
+  done: number
+  total: number
+  missing: PackView[]
+}
+
+/** A character placed on one board's canvas. Mirrors StoryStyleNode. */
+export interface StoryCastNode {
+  id: string
+  boardId: string
+  sheetId: string
+  x: number
+  y: number
+  createdAt: string
+}
+
+export type NewStoryCastNode = Pick<StoryCastNode, 'boardId' | 'sheetId'> &
+  Partial<Pick<StoryCastNode, 'x' | 'y'>>
 
 /* --------------------------------------------------------- video styles */
 
@@ -1797,6 +2027,13 @@ export interface VideoStyle {
    * is the copy that survives a bad sort.
    */
   sourceText: string
+  /**
+   * Which family this look belongs to, or `''` for uncategorised.
+   *
+   * A property of the style rather than a table, because there is one category
+   * per style and nothing hangs off a category but its name.
+   */
+  category: StyleCategory | ''
   color: GoalColor
   sortIndex: number
   createdAt: string
@@ -1806,6 +2043,75 @@ export type NewVideoStyle = Pick<VideoStyle, 'name'> &
   Partial<Omit<VideoStyle, 'id' | 'name' | 'createdAt'>>
 
 export type VideoStylePatch = Partial<Omit<VideoStyle, 'id' | 'createdAt'>>
+
+/**
+ * The families a look can be filed under.
+ *
+ * A list in code rather than whatever strings happen to be in rows, so the
+ * *order* of the groups in the panel is a decision someone made once. Same
+ * shape as `STYLE_FIELDS`, and for the same reason: the hint is what tells you
+ * which box a new look belongs in without having to read every look already in
+ * it.
+ *
+ * `''` — uncategorised — is deliberately not in this list. It is the absence of
+ * a choice, it gets its own trailing group, and every style the user has
+ * hand-written lands there until they say otherwise.
+ */
+export const STYLE_CATEGORIES = [
+  {
+    id: 'cinema',
+    label: 'Anamorphic cinema',
+    hint: 'Scope framing, big-format restraint, deliberate camera'
+  },
+  {
+    id: 'documentary',
+    label: 'Documentary handheld',
+    hint: 'Unstabilised, available light, caught rather than staged'
+  },
+  {
+    id: 'analog',
+    label: 'Lo-fi and analog',
+    hint: 'Film stock, tape, phone capture — texture as the point'
+  },
+  {
+    id: 'night',
+    label: 'Night and neon',
+    hint: 'Practicals as the only key, colour held in the light sources'
+  },
+  {
+    id: 'editorial',
+    label: 'Editorial and portrait',
+    hint: 'Fashion, interiors, protected skin, controlled light'
+  },
+  {
+    id: 'macro',
+    label: 'Macro and product',
+    hint: 'Close, clean and tactile — the object is the subject'
+  },
+  {
+    id: 'stylised',
+    label: 'Non-photoreal',
+    hint: 'Animation, artifacting, illusion — not pretending to be a camera'
+  },
+  {
+    id: 'landscape',
+    label: 'Landscape and atmosphere',
+    hint: 'Weather, scale, distance — the air between camera and subject'
+  }
+] as const satisfies readonly { id: string; label: string; hint: string }[]
+
+export type StyleCategory = (typeof STYLE_CATEGORIES)[number]['id']
+
+/** `''` is uncategorised and is a legal value, hence the union. */
+export const isStyleCategory = (value: unknown): value is StyleCategory | '' =>
+  value === '' ||
+  STYLE_CATEGORIES.some((c) => c.id === value)
+
+export const STYLE_CATEGORY_LABEL: Record<StyleCategory, string> =
+  Object.fromEntries(STYLE_CATEGORIES.map((c) => [c.id, c.label])) as Record<
+    StyleCategory,
+    string
+  >
 
 /** The named fields, in the order a prompt should state them. */
 export const STYLE_FIELDS = [

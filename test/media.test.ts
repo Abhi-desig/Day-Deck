@@ -93,3 +93,42 @@ describe('deck-media take URLs', () => {
     expect(mediaRefFrom('')).toBeNull()
   })
 })
+
+/**
+ * A shot is the third host and the second one whose path is *built* from the id
+ * in the URL rather than looked up from a row the user gestured at. That is the
+ * more dangerous of the two shapes, so the traversal cases are asserted here in
+ * full rather than assumed to be covered by the shared parser.
+ */
+describe('deck-media shot URLs', () => {
+  const id = '9c8b7a65-4321-4fed-9876-543210fedcba'
+
+  it('accepts a shot id and reports its host', () => {
+    expect(mediaRefFrom(`deck-media://shot/${id}`)).toEqual({
+      host: 'shot',
+      id
+    })
+  })
+
+  it('does not answer as an item', () => {
+    // Same rule the take host follows: a shot id is not a list item id, and
+    // looking one up as the other would be a lookup against the wrong table.
+    expect(itemIdFrom(`deck-media://shot/${id}`)).toBeNull()
+  })
+
+  it('refuses anything shaped like a path', () => {
+    expect(mediaRefFrom('deck-media://shot/../../etc/passwd')).toBeNull()
+    expect(mediaRefFrom('deck-media://shot/a/b')).toBeNull()
+    expect(mediaRefFrom('deck-media://shot/%2e%2e%2fpasswd')).toBeNull()
+    expect(mediaRefFrom('deck-media://shot/%2Fetc%2Fpasswd')).toBeNull()
+    expect(mediaRefFrom('deck-media://shot/..%5Cwindows')).toBeNull()
+  })
+
+  it('refuses an empty id, the wrong scheme, and a near-miss host', () => {
+    expect(mediaRefFrom('deck-media://shot/')).toBeNull()
+    expect(mediaRefFrom('deck-media://shot')).toBeNull()
+    expect(mediaRefFrom(`file://shot/${id}`)).toBeNull()
+    expect(mediaRefFrom(`deck-media://shots/${id}`)).toBeNull()
+    expect(mediaRefFrom(`deck-media://Shot/${id}`)).toBeNull()
+  })
+})

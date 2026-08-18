@@ -30,8 +30,18 @@ interface CutState {
   render: RenderProgress | null
   exporting: boolean
   error: string | null
+  /** Which board the cut above belongs to, so a re-visit does not re-probe. */
+  loadedFor: string | null
 
   load(boardId: string): Promise<void>
+  /**
+   * Read it again whatever is held.
+   *
+   * `load` is the mount path and returns early for a board it already has;
+   * this is for the one caller that has just changed the thing being cached —
+   * creating the timeline node.
+   */
+  refresh(boardId: string): Promise<void>
   /** Write a new segment list. Called on gesture end, never per frame. */
   commit(boardId: string, segments: CutSegmentInput[]): Promise<void>
   populate(boardId: string): Promise<void>
@@ -62,8 +72,19 @@ export const useCut = create<CutState>((set, get) => ({
   render: null,
   exporting: false,
   error: null,
+  loadedFor: null,
 
   async load(boardId) {
+    // `measure` probes every take with ffprobe — several process spawns — and
+    // this ran on every visit to Storyboards for a timeline that changes only
+    // when the user edits it. The cut is per board, so "already loaded for this
+    // board" is the honest guard; every mutation below patches the store.
+    if (get().loadedFor === boardId) return
+    return get().refresh(boardId)
+  },
+
+  async refresh(boardId) {
+    set({ loadedFor: boardId })
     try {
       const { cut, segments } = await api.cut.get(boardId)
       set({ cut, segments, error: null })

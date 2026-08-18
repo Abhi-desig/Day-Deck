@@ -47,6 +47,14 @@ function assertGoogle(ctx: CallContext): void {
 }
 
 /**
+ * How a surface with no reference support says so.
+ *
+ * By name, which is the only reliable signal — anything else a 400 can mean
+ * here is a rejection that no change to this request would fix.
+ */
+const REJECTED_REFERENCES = /reference[_ ]?image|referenceimages|unknown name/i
+
+/**
  * The models the video slot may be pointed at.
  *
  * Filtered on the generation method the submit call actually uses, not on the
@@ -100,26 +108,76 @@ export async function submit(
 ): Promise<VideoOperation> {
   assertGoogle(ctx)
 
-  const payload = (await request(
-    ctx,
-    `/models/${encodeURIComponent(req.model)}:predictLongRunning`,
-    {
-      method: 'POST',
-      headers: authHeaders(ctx),
-      timeoutMs: 60_000,
-      body: {
-        instances: [{ prompt: req.prompt }],
-        parameters: {
-          sampleCount: req.sampleCount,
-          aspectRatio: req.aspectRatio,
-          ...(req.durationSec ? { durationSeconds: req.durationSec } : {}),
-          ...(req.negativePrompt?.trim()
-            ? { negativePrompt: req.negativePrompt.trim() }
-            : {})
+  const references = req.references ?? []
+
+  /**
+   * Character references, as *assets* rather than as a starting frame.
+   *
+   * `referenceType: 'asset'` is the distinction that matters. The other thing
+   * an image can be on this endpoint is the clip's first frame, and using that
+   * for a character lock would make every shot literally open on a portrait —
+   * which is not what "the same person is in this scene" means.
+   */
+  const instance = {
+    prompt: req.prompt,
+    ...(references.length > 0
+      ? {
+          referenceImages: references.map((ref) => ({
+            image: {
+              bytesBase64Encoded: ref.bytes.toString('base64'),
+              mimeType: ref.mimeType
+            },
+            referenceType: 'asset'
+          }))
+        }
+      : {})
+  }
+
+  let payload: { name?: string }
+  try {
+    payload = (await request(
+      ctx,
+      `/models/${encodeURIComponent(req.model)}:predictLongRunning`,
+      {
+        method: 'POST',
+        headers: authHeaders(ctx),
+        timeoutMs: 60_000,
+        body: {
+          instances: [instance],
+          parameters: {
+            sampleCount: req.sampleCount,
+            aspectRatio: req.aspectRatio,
+            ...(req.durationSec ? { durationSeconds: req.durationSec } : {}),
+            ...(req.negativePrompt?.trim()
+              ? { negativePrompt: req.negativePrompt.trim() }
+              : {})
+          }
         }
       }
+    )) as { name?: string }
+  } catch (err) {
+    /**
+     * A model that has never had `referenceImages` fails loudly here, and that
+     * is deliberate — there is no retreat.
+     *
+     * Dropping the field and submitting anyway would succeed, cost the same,
+     * and return a clip with a different person in it, with nothing anywhere
+     * reporting a problem. That is the exact failure this whole feature exists
+     * to prevent, so a model that cannot honour the lock refuses the run and
+     * says which models can.
+     */
+    if (
+      references.length > 0 &&
+      err instanceof AiError &&
+      REJECTED_REFERENCES.test(err.message)
+    ) {
+      throw new AiError(
+        `${ctx.label} rejected the character references: ${req.model} does not accept them. Veo 3.1 and later do — pick one in the video slot's model list in Settings, or take the characters off this board to generate from the prompt alone. Day Deck did not silently drop them, because a clip generated without them is a clip with the wrong person in it and nothing would have said so.`,
+        'config'
+      )
     }
-  )) as { name?: string }
+    throw err
+  }
 
   if (!payload.name) {
     throw new AiError(
@@ -252,6 +310,11 @@ export const veoVideo: VideoAdapter = {
   // caller has to read it off *some* adapter, and a number only present on the
   // adapters that need it is a number that gets forgotten.
   maxSamples: 4,
+  // Up to three, which is what Veo 3.1's `referenceImages` accepts. Veo 3 and
+  // earlier accept none — that is a property of the *model*, not of the
+  // dialect, so it cannot be expressed here and is caught at submit instead,
+  // loudly, rather than by dropping the field.
+  maxReferenceImages: 3,
   listModels: listVideoModels,
   submit,
   poll,

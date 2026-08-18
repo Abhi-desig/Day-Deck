@@ -72,6 +72,24 @@ describe('key slots', () => {
     expect(secrets.getApiKey()).toBe('default-key')
   })
 
+  it('gives every slot in the manifest a file of its own', async () => {
+    // The manifest-completeness pattern: a slot that exists in KEY_SLOTS but
+    // has no storage behind it is a feature nobody can give a key to, and
+    // nobody would notice until the first call failed.
+    const { KEY_SLOTS } = await import('../src/shared/types')
+    const secrets = await freshSecrets()
+
+    for (const slot of KEY_SLOTS) {
+      secrets.setApiKey(`${slot}-key`, slot)
+      expect(existsSync(join(userData, `${slot}.key`))).toBe(true)
+      expect(secrets.getApiKey(slot)).toBe(`${slot}-key`)
+    }
+    // Image is the seventh, and the newest — video and image are deliberately
+    // separate slots because they are two different bills.
+    expect(KEY_SLOTS).toHaveLength(7)
+    expect(KEY_SLOTS).toContain('image')
+  })
+
   it('refuses a slot name it does not know', async () => {
     const secrets = await freshSecrets()
     expect(() => secrets.getApiKey('sneaky' as never)).toThrow(/not a key slot/i)

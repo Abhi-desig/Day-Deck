@@ -217,6 +217,20 @@ export const soraVideo: VideoAdapter = {
   // One video per request. Not a limit this app chose, and the reason
   // `maxSamples` is on the interface at all.
   maxSamples: 1,
+  /**
+   * No character references, and this is the honest zero rather than a gap.
+   *
+   * `/videos` does take an image — `input_reference` — but it takes it as the
+   * clip's **first frame**, and it requires that frame to match the output
+   * dimensions exactly. A 3:4 portrait against a 1280x720 clip is a 400, and a
+   * portrait that did fit would make every shot open on a headshot. Neither is
+   * a character lock.
+   *
+   * Saying 0 is what makes the caller state out loud that these characters are
+   * described in the prompt only, instead of sending an image that would be
+   * ignored and reporting nothing.
+   */
+  maxReferenceImages: 0,
   listModels: listVideoModels,
   submit,
   poll,

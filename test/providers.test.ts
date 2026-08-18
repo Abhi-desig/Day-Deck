@@ -36,7 +36,8 @@ const { NON_TEXT, isVideoModel } = await import(
 )
 const { decomposeCurriculum } = await import('../src/main/services/ai')
 const { configureSlot, makeDb } = await import('./helpers')
-const { PROVIDER_INFO, videoProviders } = await import('../src/shared/types')
+const { KEY_SLOTS, PROVIDER_INFO, imageProviders, videoProviders } =
+  await import('../src/shared/types')
 
 interface FakeResponse {
   status?: number
@@ -833,5 +834,101 @@ describe('the sora video dialect', () => {
     // takes, quietly receive one, and have no way to report the shortfall on
     // something the user is billed for.
     expect(sora.soraVideo.maxSamples).toBe(1)
+  })
+})
+
+
+/**
+ * Images are the third registry, and the same rule again.
+ *
+ * The reason it is worth its own set of cases rather than trusting the video
+ * ones by analogy: this is the registry a *new* slot points at, so an install
+ * that has never opened Settings is the common case, not the edge one.
+ */
+describe('which providers can generate images', () => {
+  it('has a slot of its own, separate from video', () => {
+    // Two different bills. A portrait is cents and gets generated whenever
+    // someone is describing a character; a clip is metered per second.
+    expect(KEY_SLOTS).toContain('image')
+    expect(KEY_SLOTS).toContain('video')
+  })
+
+  it('routes a provider with an image dialect to its adapter', () => {
+    expect(providers.imageAdapterFor('gemini')).toBeDefined()
+    expect(PROVIDER_INFO.gemini.imageWire).toBe('gemini-image')
+  })
+
+  it('routes OpenAI to its own dialect rather than to Gemini', () => {
+    expect(PROVIDER_INFO.openai.imageWire).toBe('openai-image')
+    expect(providers.imageAdapterFor('openai')).not.toBe(
+      providers.imageAdapterFor('gemini')
+    )
+  })
+
+  it('refuses a language-only provider and names the ones that work', () => {
+    expect(() => providers.imageAdapterFor('groq')).toThrow(
+      /does not generate images/i
+    )
+    expect(() => providers.imageAdapterFor('groq')).toThrow(/Google Gemini/)
+    for (const p of ['openrouter', 'deepseek', 'mistral', 'anthropic'] as const) {
+      expect(() => providers.imageAdapterFor(p)).toThrow(/image/i)
+    }
+  })
+
+  it('lists the image-capable providers from the table, not a second list', () => {
+    expect(imageProviders()).toEqual(
+      (Object.keys(PROVIDER_INFO) as Array<keyof typeof PROVIDER_INFO>).filter(
+        (p) => PROVIDER_INFO[p].imageWire !== null
+      )
+    )
+    expect(imageProviders()).toContain('gemini')
+    expect(imageProviders()).not.toContain('groq')
+  })
+
+  it('states how many references each dialect takes, rather than assuming', () => {
+    // The number that decides whether a reference pack is one person from five
+    // angles or five people who match the description. A provider that takes
+    // none says so, and the caller refuses to build rather than building five
+    // strangers that look exactly like a working pack.
+    expect(providers.imageAdapterFor('gemini').maxReferences).toBeGreaterThan(0)
+    expect(providers.imageAdapterFor('openai').maxReferences).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * The model the image slot asks for when nobody has chosen one.
+ *
+ * `defaultVideoModel` exists because a slot nobody configured sent a chat model
+ * id to a video endpoint and 404'd. An image slot falling back to either of the
+ * other two defaults reproduces that bug exactly, on a button that looks like it
+ * should just work — so the fallback is a lookup with an entry of its own.
+ */
+describe('the image slot’s default model', () => {
+  it('falls back to the provider’s image default, not its chat one', () => {
+    const db = configureSlot(makeDb(), 'default', 'gemini')
+    const model = providers.modelFor(db, 'image')
+
+    expect(model).toBe(PROVIDER_INFO.gemini.defaultImageModel)
+    expect(model).not.toBe(PROVIDER_INFO.gemini.defaultModel)
+    expect(model).not.toBe(PROVIDER_INFO.gemini.defaultVideoModel)
+  })
+
+  it('prefers a model the user actually chose', () => {
+    const db = configureSlot(makeDb(), 'image', 'gemini', {
+      model: 'gemini-4-image'
+    })
+    expect(providers.modelFor(db, 'image')).toBe('gemini-4-image')
+  })
+
+  it('says so plainly when the provider has no image default worth guessing', () => {
+    const db = configureSlot(makeDb(), 'image', 'custom', {
+      baseUrl: 'http://localhost:8080/v1'
+    })
+    expect(() => providers.modelFor(db, 'image')).toThrow(/image model/i)
+  })
+
+  it('leaves the chat slots on the chat default', () => {
+    const db = configureSlot(makeDb(), 'default', 'gemini')
+    expect(providers.modelFor(db, 'goals')).toBe(PROVIDER_INFO.gemini.defaultModel)
   })
 })

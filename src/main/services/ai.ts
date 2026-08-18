@@ -1,14 +1,21 @@
 import type {
   AgentMessage,
   KeySlot,
+  PackView,
   ScenePlan,
   TopicDraft,
   VideoStyle
 } from '@shared/types'
 import { OMNI_DURATIONS, snapDuration } from '@shared/types'
+import {
+  renderRules,
+  type ProcessId,
+  type ProcessSpec
+} from '@shared/processes'
 import type { Db } from '../db'
 import { AiError, callContext, generateJson, generateText } from './providers'
 import { generateJsonWithFiles } from './providers/gemini'
+import { resolveProcess } from './processes'
 
 /**
  * What Day Deck asks a model for, in Day Deck's own terms.
@@ -50,30 +57,30 @@ const TOPIC_SCHEMA = {
   required: ['topics']
 } as const
 
-function buildPrompt(opts: {
-  title: string
-  rawText: string
-  minutesPerDay: number
-  targetTopics: number
-}): string {
-  return `You are turning a study curriculum into an ordered list of single-sitting topics.
-
-GOAL: ${opts.title}
-
-CURRICULUM:
-"""
-${opts.rawText}
-"""
-
-Rules:
-- Preserve the author's intended order. Reuse their module or section names in "module" when the curriculum has them.
-- Each topic must be one focused sitting of about ${opts.minutesPerDay} minutes or less. Split anything larger into explicitly numbered parts (e.g. "Shaders, part 2").
-- "est_minutes" is your realistic estimate of focused work for that one topic.
-- "detail" is at most one short sentence describing what finishing it looks like. Omit it when it would only restate the title.
-- Number "seq" from 1 upward with no gaps, in study order.
-- Do NOT assign dates, days, weeks, or any schedule. Scheduling happens elsewhere.
-- Do NOT invent material the curriculum does not imply.
-- Aim for roughly ${opts.targetTopics} topics, but prefer sensible granularity over hitting that number exactly.`
+export function buildPrompt(
+  spec: ProcessSpec,
+  opts: {
+    title: string
+    rawText: string
+    minutesPerDay: number
+    targetTopics: number
+  }
+): string {
+  return [
+    spec.role,
+    '',
+    `GOAL: ${opts.title}`,
+    '',
+    'CURRICULUM:',
+    '"""',
+    opts.rawText,
+    '"""',
+    '',
+    ...renderRules(spec, {
+      minutesPerDay: opts.minutesPerDay,
+      targetTopics: opts.targetTopics
+    })
+  ].join('\n')
 }
 
 /**
@@ -175,6 +182,20 @@ interface JsonBudget {
  * that differs by vendor. What is left is the part that never did: which slot
  * pays, what to ask, and what it is worth.
  */
+/**
+ * A process's limits, as the budget one call spends.
+ *
+ * A function rather than a spread so the two shapes stay separate: `ProcessSpec`
+ * is what a user configures, `JsonBudget` is what a request reserves, and
+ * `batch` belongs to the first and not the second.
+ */
+const budgetOf = (spec: ProcessSpec): JsonBudget => ({
+  timeoutMs: spec.limits.timeoutMs,
+  output: spec.limits.output,
+  minOutput: spec.limits.minOutput,
+  thinking: spec.limits.thinking
+})
+
 const askForJson = (
   db: Db,
   slot: KeySlot,
@@ -193,20 +214,16 @@ export async function decomposeCurriculum(opts: {
   minutesPerDay: number
   targetTopics: number
 }): Promise<TopicDraft[]> {
+  const spec = resolveProcess(opts.db, 'curriculum.decompose')
   return parseTopics(
-    await askForJson(opts.db, 'goals', opts.model, buildPrompt(opts), TOPIC_SCHEMA, {
-      timeoutMs: 180_000,
-      // A whole curriculum's worth of topics; the cap stays where it was
-      // because truncation here fails the entire plan.
-      output: 32_768,
-      // A short curriculum genuinely fits in a quarter of that, and a plan is
-      // worth having on a thin balance. Below this the topic list starts
-      // arriving half-written, which fails the plan either way.
-      minOutput: 8_192,
-      // Deciding how a subject breaks up is genuinely a reasoning job, so this
-      // is the most generous budget in the file — bounded, not unlimited.
-      thinking: 4_096
-    })
+    await askForJson(
+      opts.db,
+      spec.slot,
+      opts.model,
+      buildPrompt(spec, opts),
+      TOPIC_SCHEMA,
+      budgetOf(spec)
+    )
   )
 }
 
@@ -239,11 +256,14 @@ export interface SubdivideInput {
   estMinutes: number
 }
 
-function buildSubdividePrompt(opts: {
-  goalTitle: string
-  curriculumExcerpt: string
-  topics: SubdivideInput[]
-}): string {
+export function buildSubdividePrompt(
+  spec: ProcessSpec,
+  opts: {
+    goalTitle: string
+    curriculumExcerpt: string
+    topics: SubdivideInput[]
+  }
+): string {
   const list = opts.topics
     .map(
       (t) =>
@@ -254,27 +274,23 @@ function buildSubdividePrompt(opts: {
     )
     .join('\n')
 
-  return `You are breaking study topics into the specific things a learner has to actually understand or do.
-
-GOAL: ${opts.goalTitle}
-
-WHAT THE LEARNER'S CURRICULUM SAYS:
-"""
-${opts.curriculumExcerpt}
-"""
-
-TOPICS:
-${list}
-
-For every topic above, return 3 to 6 learning points.
-
-Rules:
-- Copy each topic's "id" back exactly as given. Never invent an id.
-- A point names one concrete thing to learn, build or verify — "Write a fragment shader that samples a texture", not "Understand shaders".
-- Keep every point under 12 words, sentence case, no trailing full stop, no numbering.
-- Together the points must fit the topic's stated minute budget. Fewer, larger points for a short topic.
-- Stay inside what the curriculum above implies. Do NOT introduce tools, libraries, courses or subjects it never mentions.
-- Do NOT restate the topic title as a point, and do NOT mention dates, days or scheduling.`
+  return [
+    spec.role,
+    '',
+    `GOAL: ${opts.goalTitle}`,
+    '',
+    "WHAT THE LEARNER'S CURRICULUM SAYS:",
+    '"""',
+    opts.curriculumExcerpt,
+    '"""',
+    '',
+    'TOPICS:',
+    list,
+    '',
+    'For every topic above, return 3 to 6 learning points.',
+    '',
+    ...renderRules(spec)
+  ].join('\n')
 }
 
 function parseBreakdowns(
@@ -341,16 +357,15 @@ export async function subdivideTopics(opts: {
 }): Promise<Array<{ topicId: string; points: string[] }>> {
   if (opts.topics.length === 0) return []
 
+  const spec = resolveProcess(opts.db, 'curriculum.subdivide')
   return parseBreakdowns(
     await askForJson(
       opts.db,
-      'goals',
+      spec.slot,
       opts.model,
-      buildSubdividePrompt(opts),
+      buildSubdividePrompt(spec, opts),
       POINTS_SCHEMA,
-      // Fifteen topics' worth of short bullet points — roomy above, and still
-      // workable well below, since the answer is lists of half-sentences.
-      { timeoutMs: 120_000, output: 32_768, minOutput: 4_096, thinking: 2_048 }
+      budgetOf(spec)
     )
   )
 }
@@ -366,17 +381,8 @@ export async function subdivideTopics(opts: {
  * plan the whole app exists to keep. So the context it is given is the *only*
  * thing it may answer from, and admitting the gap is an allowed answer.
  */
-const AGENT_SYSTEM = `You are the study assistant built into Day Deck, a daily planner. You answer questions about ONE specific day in the user's own plan.
-
-The DAY CONTEXT you are given is the complete set of facts you may use: the day's tasks, the goal each task belongs to, that goal's curriculum, the AI-generated learning points for each task, and any reminders on the day.
-
-Rules:
-- Answer only from the DAY CONTEXT. It is the user's own plan and it outranks anything you know about the subject.
-- When asked what a task is, what to learn, or what to do, ground the answer in that task's learning points and its goal.
-- You may explain, clarify and give brief worked context for something already in the plan. That is teaching, and it is welcome.
-- You may NOT add topics, resources, courses, tools or exercises the plan does not contain, and you may NOT propose changes to the schedule, the order, or the deadline. If the user wants that, tell them it is a Goals Admin decision.
-- If the question is not covered by the DAY CONTEXT, say so plainly in one sentence and name what the day does cover.
-- Be brief and concrete. Under 150 words unless asked to go deeper. Plain sentences and short lists, no headings, no markdown tables.`
+export const buildAgentSystem = (spec: ProcessSpec): string =>
+  [spec.role, '', ...renderRules(spec)].join('\n')
 
 /**
  * Ask about one day. Plain text out, not JSON — this is prose for a human.
@@ -392,16 +398,17 @@ export async function askAgent(opts: {
   history: AgentMessage[]
   question: string
 }): Promise<string> {
-  return generateText(opts.db, 'agent', {
+  const spec = resolveProcess(opts.db, 'day.agent')
+  return generateText(opts.db, spec.slot, {
     model: opts.model,
-    system: AGENT_SYSTEM,
+    system: buildAgentSystem(spec),
     history: opts.history,
     question: `DAY CONTEXT:\n${opts.context}\n\nQUESTION: ${opts.question}`,
-    timeoutMs: 60_000,
-    output: 1_024,
+    timeoutMs: spec.limits.timeoutMs,
+    output: spec.limits.output,
     // The one place a trim is nearly free: prose keeps whatever arrived, so a
     // shorter answer on a thin balance is a shorter answer, not a failure.
-    minOutput: 256
+    minOutput: spec.limits.minOutput
   })
 }
 
@@ -455,6 +462,15 @@ export interface ScenePlanInput {
 export interface SheetLine {
   name: string
   description: string
+  /**
+   * Whether this character's approved portrait is attached to generations on
+   * this board.
+   *
+   * Every named-and-described character is sent either way — placement adds the
+   * image lock, it does not gate the words — so this changes the *rules*, not
+   * the roster.
+   */
+  locked?: boolean
 }
 
 /**
@@ -467,12 +483,30 @@ function renderCast(characters: readonly SheetLine[], rule: string): string[] {
   const named = characters.filter((c) => c.name.trim() && c.description.trim())
   if (named.length === 0) return []
 
+  const locked = named.filter((c) => c.locked)
+
   return [
     '',
     'CAST — the people in this film:',
-    ...named.map((c) => `- ${c.name.trim()}: ${c.description.trim()}`),
-    rule
+    ...named.map(
+      (c) =>
+        `- ${c.name.trim()}: ${c.description.trim()}${
+          c.locked ? ' [reference image supplied]' : ''
+        }`
+    ),
+    rule,
+    ...(locked.length > 0
+      ? [
+          `${names(locked)} ${locked.length === 1 ? 'is' : 'are'} also supplied to the generator as a reference photograph. Their description above is what that photograph shows — keep it word for word, and do not add or change any physical detail, or the words will contradict the picture.`
+        ]
+      : [])
   ]
+}
+
+const names = (people: readonly SheetLine[]): string => {
+  const list = people.map((p) => p.name.trim())
+  if (list.length <= 1) return list.join('')
+  return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`
 }
 
 /**
@@ -505,26 +539,15 @@ export function renderStyle(style: VideoStyle): string {
 }
 
 /**
- * What each supported length is *for*.
+ * What each supported length is *for* now lives in `PROCESS_DEFAULTS`, with the
+ * rest of `board.scenes`' rules, because it is prose the user may want to edit.
  *
- * Keyed by the duration rather than by position. The sentence this replaced
- * described only the first and last entries, so every length added between them
- * would have been listed as legal and then left with no guidance at all —
- * exactly what happened when 4 and 8 arrived. A length with no entry here still
- * gets its line, so the two can never silently disagree.
+ * That makes it the one piece of stored text with a constant behind it —
+ * `OMNI_DURATIONS` decides what is renderable, and the rules have to name the
+ * same set. `test/process-prompts.test.ts` asserts they do, which is the
+ * manifest-completeness pattern this repo already uses: the drift is caught by
+ * a test rather than by a board full of scenes nobody can generate.
  */
-const DURATION_INTENT: Record<number, string> = {
-  4: 'a single beat — a look, a cut-in, a reveal, one gesture',
-  6: 'one complete small action, or a held moment with movement in it',
-  8: 'an action carried by a camera move, or two beats that belong in one shot',
-  10: 'a developing action, a long move, or a shot that has to breathe'
-}
-
-const renderDurationIntents = (): string[] =>
-  OMNI_DURATIONS.map(
-    (seconds) =>
-      `  - ${seconds}s: ${DURATION_INTENT[seconds] ?? 'whatever the shot needs'}`
-  )
 
 /**
  * Turn a brief into scenes — the breakdown only.
@@ -535,9 +558,9 @@ const renderDurationIntents = (): string[] =>
  * chosen per scene according to what the shot needs, which is why the prompt
  * explains what each length is *for* rather than just listing them.
  */
-function buildScenePrompt(opts: ScenePlanInput): string {
+function buildScenePrompt(spec: ProcessSpec, opts: ScenePlanInput): string {
   const parts: string[] = [
-    'You are a director breaking a creative brief into individual shots for an AI video generator.',
+    spec.role,
     '',
     'CREATIVE BRIEF:',
     opts.brief.trim() || '(none given)'
@@ -583,19 +606,7 @@ function buildScenePrompt(opts: ScenePlanInput): string {
     )
   }
 
-  parts.push(
-    '',
-    'RULES:',
-    `- duration_sec must be exactly one of: ${OMNI_DURATIONS.join(', ')}. Nothing else is renderable.`,
-    '- Choose per scene by what the shot needs:',
-    ...renderDurationIntents(),
-    '- A scene is one continuous shot. No cuts inside a scene.',
-    '- title is a short shot name, 2-5 words, no numbering.',
-    '- description says what happens in this scene: subject, action, camera move if any. One or two sentences, written for the person reading the board.',
-    '- Order the scenes as they will be cut together.',
-    '- Cover the whole brief. Use as many scenes as it genuinely needs and no more.',
-    '- Do not write generation prompts. That is a later, separate step.'
-  )
+  parts.push('', ...renderRules(spec))
 
   return parts.join('\n')
 }
@@ -653,22 +664,15 @@ function parseScenes(raw: string): ScenePlan[] {
 }
 
 export async function planScenes(opts: ScenePlanInput): Promise<ScenePlan[]> {
+  const spec = resolveProcess(opts.db, 'board.scenes')
   return parseScenes(
     await askForJson(
       opts.db,
-      'scenes',
+      spec.slot,
       opts.model,
-      buildScenePrompt(opts),
+      buildScenePrompt(spec, opts),
       SCENE_SCHEMA,
-      {
-        timeoutMs: 180_000,
-        // A breakdown is a title, a sentence or two and a number per shot. Even
-        // a forty-shot film is a few thousand tokens; the old 32k ceiling was
-        // room for a runaway rather than room for an answer.
-        output: 8_192,
-        minOutput: 2_048,
-        thinking: 1_024
-      }
+      budgetOf(spec)
     )
   )
 }
@@ -735,9 +739,12 @@ export interface PromptPlanInput {
  * a prompt that says "in the established style" is worthless the moment it
  * leaves this app, and leaving is the entire purpose of a prompt.
  */
-function buildPromptWriterPrompt(opts: PromptPlanInput): string {
+function buildPromptWriterPrompt(
+  spec: ProcessSpec,
+  opts: PromptPlanInput
+): string {
   const parts: string[] = [
-    'You are a director writing generation prompts, one per shot, for an AI video generator.',
+    spec.role,
     '',
     'CREATIVE BRIEF:',
     opts.brief.trim() || '(none given)'
@@ -786,14 +793,7 @@ function buildPromptWriterPrompt(opts: PromptPlanInput): string {
     '',
     `WRITE PROMPTS FOR SCENES: ${opts.write.join(', ')}. The rest are context — return nothing for them.`,
     '',
-    'RULES:',
-    '- Every prompt must stand alone. Describe the look in the prompt itself; never write "as established", "same style", or "continuing from the previous shot".',
-    '- State it in this order, every time: subject, action, camera, lens, lighting, grade, film stock, aspect. A generator reads the front of a prompt hardest, so what is in the shot goes first and how it was finished goes last.',
-    '- A prompt describes one continuous shot. No cuts inside a scene.',
-    '- Keep the look wording identical across prompts. Consistency across shots is the whole job.',
-    '- Match the amount of action to the length in brackets. A 4s shot is one beat and its prompt should describe one thing happening; a 10s shot can carry a developing action or a camera move. A prompt with three actions in it will not fit a short scene.',
-    "- Use a scene's wired references by name only when the shot genuinely uses them; film-wide references apply to every shot.",
-    '- Return each prompt with its scene number.'
+    ...renderRules(spec)
   )
 
   return parts.join('\n')
@@ -843,34 +843,15 @@ function parsePrompts(raw: string, write: readonly number[]): Map<number, string
 export async function planPrompts(
   opts: PromptPlanInput
 ): Promise<Map<number, string>> {
+  const spec = resolveProcess(opts.db, 'board.prompts')
   return parsePrompts(
     await askForJson(
       opts.db,
-      'prompts',
+      spec.slot,
       opts.model,
-      buildPromptWriterPrompt(opts),
+      buildPromptWriterPrompt(spec, opts),
       PROMPT_SCHEMA,
-      {
-        timeoutMs: 180_000,
-        /**
-         * PROMPT_BATCH prompts, each a paragraph that restates the look and any
-         * cast in it. Four of those is around 1,200 tokens of answer, so this
-         * is roughly three times the realistic need.
-         *
-         * It used to be 12,288, sized for a batch of fifteen — and that number
-         * is what a credit-metered gateway reserved up front and refused, on an
-         * account whose balance covered about 4,400. The answer was never
-         * anywhere near 12k; the reservation was. Batching smaller fixed the
-         * refusal and the ceiling followed the batch down.
-         */
-        output: 4_096,
-        // Four complete prompts plus their thinking. Below this they start
-        // arriving cut off mid-sentence, which is not a cheaper success.
-        minOutput: 2_048,
-        // Most of this job is restating settled wording in a fixed order, which
-        // is close to transcription — it does not need long deliberation.
-        thinking: 512
-      }
+      budgetOf(spec)
     ),
     opts.write
   )
@@ -914,9 +895,9 @@ export interface RevisionInput {
  * exists to protect — and it does it invisibly, because the prompt still reads
  * perfectly well on its own.
  */
-function buildRevisionPrompt(opts: RevisionInput): string {
+function buildRevisionPrompt(spec: ProcessSpec, opts: RevisionInput): string {
   const parts: string[] = [
-    'You are a director revising one generation prompt for an AI video generator.',
+    spec.role,
     '',
     'CREATIVE BRIEF:',
     opts.brief.trim() || '(none given)'
@@ -963,12 +944,7 @@ function buildRevisionPrompt(opts: RevisionInput): string {
     opts.note.trim(),
     '"""',
     '',
-    'RULES:',
-    '- Change what was asked for and nothing else. Every other clause keeps its exact wording.',
-    '- The look, the film stock, the aspect and any character description are not yours to reword. They are what makes this shot cut together with the others.',
-    '- Keep the order: subject, action, camera, lens, lighting, grade, film stock, aspect.',
-    '- Still one continuous shot, and still sized to the length in brackets.',
-    '- Return the whole revised prompt, not a diff and not a description of what you changed.'
+    ...renderRules(spec)
   )
 
   return parts.join('\n')
@@ -977,22 +953,14 @@ function buildRevisionPrompt(opts: RevisionInput): string {
 export async function reviseScenePrompt(
   opts: RevisionInput
 ): Promise<string> {
+  const spec = resolveProcess(opts.db, 'board.revision')
   const raw = await askForJson(
     opts.db,
-    'prompts',
+    spec.slot,
     opts.model,
-    buildRevisionPrompt(opts),
+    buildRevisionPrompt(spec, opts),
     REVISION_SCHEMA,
-    {
-      timeoutMs: 180_000,
-      // One prompt, so a quarter of a PROMPT_BATCH batch — and sized the same
-      // way, because a credit-metered provider reserves this ceiling up front.
-      // A revision must never be the call that fails on a thin balance.
-      output: 4_096,
-      minOutput: 2_048,
-      // Mostly restating settled wording with one clause changed.
-      thinking: 512
-    }
+    budgetOf(spec)
   )
 
   let parsed: unknown
@@ -1055,13 +1023,16 @@ export interface CutProposalRow {
   reason: string
 }
 
-function buildCutPrompt(opts: {
-  brief: string
-  clips: CutClip[]
-  targetSec: number | null
-}): string {
+function buildCutPrompt(
+  spec: ProcessSpec,
+  opts: {
+    brief: string
+    clips: CutClip[]
+    targetSec: number | null
+  }
+): string {
   const parts: string[] = [
-    'You are an editor choosing cut points. The clips are attached in the order they appear below, one per shot.',
+    spec.role,
     '',
     'THE FILM:',
     opts.brief.trim() || '(no brief given)',
@@ -1084,16 +1055,7 @@ function buildCutPrompt(opts: {
     )
   }
 
-  parts.push(
-    '',
-    'RULES:',
-    '- Watch each clip. Choose start and end times that keep the strongest part of the action and drop dead air at the head and tail.',
-    '- Times are in seconds from the start of that clip, and must lie inside its length as given above.',
-    '- Keep the clips in the order listed. You are trimming, not reordering.',
-    '- A clip may appear more than once if two separate moments in it are both worth keeping. It may be left out entirely if nothing in it is.',
-    '- Never return a segment shorter than half a second — it reads as a glitch rather than a cut.',
-    '- Give one short, concrete reason per segment, about what is in the frame. "Tightens the pacing" says nothing; "starts as she turns, drops the empty tail" does.'
-  )
+  parts.push('', ...renderRules(spec))
 
   return parts.join('\n')
 }
@@ -1114,21 +1076,15 @@ export async function planCut(opts: {
 }): Promise<CutProposalRow[]> {
   if (opts.clips.length === 0) return []
 
-  const ctx = callContext(opts.db, 'prompts')
+  const spec = resolveProcess(opts.db, 'board.cut')
+  const ctx = callContext(opts.db, spec.slot)
   const raw = await generateJsonWithFiles(
     ctx,
     {
       model: opts.model,
-      prompt: buildCutPrompt(opts),
+      prompt: buildCutPrompt(spec, opts),
       schema: CUT_SCHEMA,
-      // Three minutes: the model is watching video, not reading text, and the
-      // first token takes noticeably longer to arrive than on a prose call.
-      timeoutMs: 180_000,
-      output: 4_096,
-      minOutput: 2_048,
-      // Genuinely a judgement call about what is in the frame, so more than the
-      // 512 a restating job gets — but bounded, because it is still one answer.
-      thinking: 1_024
+      ...budgetOf(spec)
     },
     opts.clips.map((clip) => ({ uri: clip.uri, mimeType: clip.mimeType }))
   )
@@ -1220,9 +1176,9 @@ const STYLE_SORT_SCHEMA = {
   required: STYLE_SORT_FIELDS.map(([key]) => key)
 } as const
 
-function buildStyleSortPrompt(text: string): string {
+function buildStyleSortPrompt(spec: ProcessSpec, text: string): string {
   return [
-    'You are filing a film look description into fixed fields. You are a sorter, not a writer.',
+    spec.role,
     '',
     'THE DESCRIPTION, verbatim:',
     '"""',
@@ -1232,11 +1188,7 @@ function buildStyleSortPrompt(text: string): string {
     'FIELDS:',
     ...STYLE_SORT_FIELDS.map(([key, hint]) => `- ${key}: ${hint}`),
     '',
-    'RULES:',
-    '- Use only words and phrases that appear in the description. Do not add, infer, or embellish anything.',
-    '- A field the description says nothing about must be an empty string. Empty is the correct answer, not a failure.',
-    '- Do not repeat the same phrase into several fields; put it in the one it fits best.',
-    '- Keep the user\'s own wording. Reordering and joining their phrases is fine; new adjectives are not.'
+    ...renderRules(spec)
   ].join('\n')
 }
 
@@ -1293,16 +1245,14 @@ export async function sortStyleText(opts: {
   model: string
   text: string
 }): Promise<StyleSortResult> {
+  const spec = resolveProcess(opts.db, 'style.sort')
   const raw = await askForJson(
     opts.db,
-    'scenes',
+    spec.slot,
     opts.model,
-    buildStyleSortPrompt(opts.text),
+    buildStyleSortPrompt(spec, opts.text),
     STYLE_SORT_SCHEMA,
-    // Moving the user's own words into named boxes. The output is a handful of
-    // short fields and there is nothing here to reason about — anything the
-    // model thought up would be thrown away by keepGroundedFields anyway.
-    { timeoutMs: 30_000, output: 2_048, minOutput: 512, thinking: 0 }
+    budgetOf(spec)
   )
 
   let parsed: unknown
@@ -1319,4 +1269,170 @@ export async function sortStyleText(opts: {
 }
 
 /** Exported for their tests — the prompt is the feature. */
-export { buildScenePrompt, buildPromptWriterPrompt, buildStyleSortPrompt }
+/* ------------------------------------------------- character portraits */
+
+export interface PortraitInput {
+  name: string
+  description: string
+  /** Portrait-only direction: background, light, framing. May be empty. */
+  extra: string
+  /** The look placed on the board, so the portrait is shot the way the film is. */
+  style: VideoStyle | null
+}
+
+/**
+ * The prompt behind one portrait candidate.
+ *
+ * Deliberately asks for a *reference* photograph rather than a shot from the
+ * film: this image's job is to be a face the generator can be conditioned on,
+ * so a dramatic three-quarter-lit hero frame is actively worse than a clear,
+ * evenly lit one. The board's look still goes in, because a character shot in
+ * a completely different grade to the film reads as a different person once
+ * they are both on screen — but it goes in as finish, not as staging.
+ */
+export function buildPortraitPrompt(
+  spec: ProcessSpec,
+  opts: PortraitInput
+): string {
+  const parts: string[] = [
+    spec.role,
+    '',
+    `CHARACTER — ${opts.name.trim() || 'unnamed'}:`,
+    opts.description.trim() || '(no description given)'
+  ]
+
+  if (opts.extra.trim()) {
+    parts.push('', 'PORTRAIT DIRECTION:', opts.extra.trim())
+  }
+
+  if (opts.style) {
+    parts.push(
+      '',
+      `FILM LOOK — "${opts.style.name}". Match the grade, stock and lighting character of this look so the reference sits in the same world as the film:`,
+      renderStyle(opts.style)
+    )
+  }
+
+  parts.push('', ...renderRules(spec))
+
+  return parts.join('\n')
+}
+
+/** What each pack view is *for*, in the words the generator is given. */
+const PACK_VIEW_DIRECTION: Record<PackView, string> = {
+  front: 'a straight-on front view, head and shoulders, neutral expression',
+  'three-quarter':
+    'a three-quarter view, the head turned about 45 degrees from camera',
+  profile: 'a full side profile, the head turned 90 degrees from camera',
+  'full-body': 'a full-length standing shot, head to feet, arms relaxed',
+  expression:
+    'a front view with a different, natural expression — mid-speech or a slight smile'
+}
+
+/**
+ * The prompt behind one pack angle.
+ *
+ * The most important sentence in this file is the first rule. Every pack image
+ * is generated with the approved portrait attached as an input reference, and
+ * the prompt's entire job is to say *this is that person, from here* — not "a
+ * person matching this description", which is what re-prompting the words gets
+ * you and which produces five plausible strangers that look exactly like a pack
+ * until two of them are side by side.
+ */
+export function buildPackPrompt(
+  spec: ProcessSpec,
+  opts: {
+    name: string
+    description: string
+    view: PackView
+  }
+): string {
+  return [
+    spec.role,
+    '',
+    `NEW VIEW: ${PACK_VIEW_DIRECTION[opts.view]}.`,
+    '',
+    `CHARACTER — ${opts.name.trim() || 'unnamed'}:`,
+    opts.description.trim() || '(no description given)',
+    '',
+    ...renderRules(spec)
+  ].join('\n')
+}
+
+/**
+ * The schema each process's answer must match, for the panel to show read-only.
+ *
+ * These are the contract between the prompt and the parser, which is exactly
+ * why they are not editable: rewording a rule is a preference, changing the
+ * shape of the answer is breaking `parsePrompts` from Settings. Shown rather
+ * than hidden, because "what is it actually asking for" is a fair question and
+ * the answer is right here.
+ *
+ * The image processes have none — an image call returns bytes, not JSON.
+ */
+export const PROCESS_SCHEMA: Partial<Record<ProcessId, unknown>> = {
+  'curriculum.decompose': TOPIC_SCHEMA,
+  'curriculum.subdivide': POINTS_SCHEMA,
+  'board.scenes': SCENE_SCHEMA,
+  'board.prompts': PROMPT_SCHEMA,
+  'board.revision': REVISION_SCHEMA,
+  'board.cut': CUT_SCHEMA,
+  'style.sort': STYLE_SORT_SCHEMA
+}
+
+/**
+ * What each process assembles around the editable prose, said in the panel.
+ *
+ * Worth stating rather than leaving to be discovered: the rules are half of a
+ * prompt, and the other half — the brief, the board, the cast, the style, the
+ * batch — is code, in a fixed order, for reasons the rules cannot express.
+ */
+export const PROCESS_FIXED: Record<ProcessId, string[]> = {
+  'curriculum.decompose': [
+    'The goal title and the curriculum text, quoted verbatim',
+    'The JSON schema and the topic parser, including the minute clamp'
+  ],
+  'curriculum.subdivide': [
+    'The goal, the curriculum excerpt and the topic list with their ids',
+    'The JSON schema and the id-matching parser'
+  ],
+  'day.agent': [
+    'The DAY CONTEXT block: the day’s tasks, goals, learning points and reminders',
+    'The conversation history, passed as real turns rather than pasted in'
+  ],
+  'board.scenes': [
+    'The brief, the visual style, the placed look, the cast and the references',
+    'What is already on the board, in order',
+    'The JSON schema, and the snap that pulls a stray duration to a legal one'
+  ],
+  'board.prompts': [
+    'The brief, the placed look, the cast and both tiers of reference',
+    'The whole board in cutting order, every call',
+    'Which scene numbers this batch is for, and the schema they come back on'
+  ],
+  'board.revision': [
+    'The shot, the prompt that produced the current take, and the note verbatim'
+  ],
+  'board.cut': [
+    'The clips themselves, uploaded and attached',
+    'The clip list with real measured lengths, and the clamp that keeps a cut inside its file'
+  ],
+  'style.sort': [
+    'The description, quoted verbatim, and the field list',
+    'The grounding check that drops any value whose words are not in the description'
+  ],
+  'cast.portrait': [
+    'The character’s name and description, and the board’s placed look',
+    'Any portrait-only direction typed beside the button'
+  ],
+  'cast.pack': [
+    'The approved portrait, attached as an input reference',
+    'Which of the five views this call is for'
+  ]
+}
+
+export {
+  buildScenePrompt,
+  buildPromptWriterPrompt,
+  buildStyleSortPrompt
+}

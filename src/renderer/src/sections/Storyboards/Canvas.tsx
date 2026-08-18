@@ -33,16 +33,20 @@ import { useCut } from '../../store/useCut'
 import { usePrefs } from '../../store/usePrefs'
 import { useStoryboards } from '../../store/useStoryboards'
 import { useStyles } from '../../store/useStyles'
+import { useCast } from '../../store/useCast'
 import { useTakes } from '../../store/useTakes'
+import { useShallow } from 'zustand/react/shallow'
 import { BriefNode } from './nodes/BriefNode'
 import { ListNode, LIST_MIN_H, LIST_MIN_W } from './nodes/ListNode'
 import { SceneGroupNode } from './nodes/SceneGroupNode'
 import { SceneNode } from './nodes/SceneNode'
 import { StyleNode, STYLE_W } from './nodes/StyleNode'
+import { CastNode, CAST_W } from './nodes/CastNode'
 import { TimelineNode } from './nodes/TimelineNode'
 import {
   HANDLE,
   STYLE_DRAG_TYPE,
+  CAST_DRAG_TYPE,
   entityId,
   nodeId,
   nodeKind,
@@ -73,6 +77,7 @@ const NODE_TYPES = {
   list: ListNode,
   scene: SceneNode,
   style: StyleNode,
+  cast: CastNode,
   timeline: TimelineNode
 }
 
@@ -146,9 +151,27 @@ function Graph({
   const moveStyle = useStyles((s) => s.move)
   const unplaceStyle = useStyles((s) => s.unplace)
 
+  // The cast itself stays in the board store — a character is part of the
+  // board. What lives in `useCast` is everything that ticks on its own.
+  const sheets = useStoryboards((s) => s.sheets)
+
+  const placedCast = useCast((s) => s.placed)
+  const placeCast = useCast((s) => s.place)
+  const moveCast = useCast((s) => s.move)
+  const unplaceCast = useCast((s) => s.unplace)
+
   const sceneLayout = usePrefs((s) => s.sceneLayout)
   const cut = useCut((s) => s.cut)
-  const takesByFrame = useTakes((s) => s.byFrame)
+  /**
+   * Shallow, and it matters more here than it looks.
+   *
+   * A plain selector hands back `byFrame` by identity, and every generation
+   * progress tick replaces that object — which rebuilt the whole board graph,
+   * which rebuilt every node's `data`, which React Flow reads as *every node
+   * changed*. Comparing one level down means a tick that did not actually
+   * change a scene's takes stops the cascade at the selector.
+   */
+  const takesByFrame = useTakes(useShallow((s) => s.byFrame))
 
   // The timeline draws its clips from every take on the board. Flattened here
   // rather than in the node so the pure builder still receives plain data.
@@ -175,6 +198,8 @@ function Graph({
         briefRefs,
         placedStyles,
         styleLibrary,
+        placedCast,
+        sheets,
         sceneLayout,
         cut,
         takes
@@ -188,6 +213,8 @@ function Graph({
       briefRefs,
       placedStyles,
       styleLibrary,
+      placedCast,
+      sheets,
       sceneLayout,
       cut,
       takes
@@ -203,10 +230,21 @@ function Graph({
         refs,
         briefRefs,
         placedStyles,
+        placedCast,
         sceneLayout,
         cut
       }),
-    [board, frames, items, refs, briefRefs, placedStyles, sceneLayout, cut]
+    [
+      board,
+      frames,
+      items,
+      refs,
+      briefRefs,
+      placedStyles,
+      placedCast,
+      sceneLayout,
+      cut
+    ]
   )
 
   const [nodes, setNodes, onNodesChange] = useNodesState<BoardNode>(derivedNodes)
@@ -249,10 +287,11 @@ function Graph({
       if (node.type === 'scene') void placeFrame(id, rect)
       if (node.type === 'list') void placeList(id, rect)
       if (node.type === 'style') void moveStyle(id, rect.x, rect.y)
+      if (node.type === 'cast') void moveCast(id, rect.x, rect.y)
       // The timeline is the one node whose position the cut table stores.
       if (node.type === 'timeline') void api.cut.move(id, rect.x, rect.y)
     },
-    [placeFrame, placeList, moveStyle]
+    [placeFrame, placeList, moveStyle, moveCast]
   )
 
   /**
@@ -326,9 +365,12 @@ function Graph({
         if (node.type === 'list') void removeList(entityId(node.id))
         // Deleting the node takes the style off this board. The library keeps it.
         if (node.type === 'style') void unplaceStyle(entityId(node.id))
+        // Same rule for a character: the placement goes, the person stays in
+        // the cast and their portrait stays approved.
+        if (node.type === 'cast') void unplaceCast(entityId(node.id))
       }
     },
-    [removeFrame, removeList, unplaceStyle]
+    [removeFrame, removeList, unplaceStyle, unplaceCast]
   )
 
   /**
@@ -467,7 +509,13 @@ function Graph({
       // land here: a style chip from the panel, and files from the Finder.
       onDragOver={(event) => {
         const types = event.dataTransfer.types
-        if (!types.includes(STYLE_DRAG_TYPE) && !types.includes('Files')) return
+        if (
+          !types.includes(STYLE_DRAG_TYPE) &&
+          !types.includes(CAST_DRAG_TYPE) &&
+          !types.includes('Files')
+        ) {
+          return
+        }
         event.preventDefault()
         event.dataTransfer.dropEffect = 'copy'
       }}
@@ -489,6 +537,18 @@ function Graph({
             // The offer follows a successful drop, not the drag — a drop that
             // failed has nothing to plan from.
             if (placed) onStyleDropped(styleId)
+          })
+          return
+        }
+
+        const sheetId = event.dataTransfer.getData(CAST_DRAG_TYPE)
+        if (sheetId) {
+          event.preventDefault()
+          void placeCast({
+            boardId: board.id,
+            sheetId,
+            x: Math.round(at.x - CAST_W / 2),
+            y: Math.round(at.y - 40)
           })
           return
         }

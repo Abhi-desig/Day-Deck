@@ -1,4 +1,5 @@
 import type { DateKey } from './date'
+import type { ProcessId, ProcessLimits, ResolvedProcess } from './processes'
 import type {
   AgentMessage,
   AgentReply,
@@ -36,6 +37,7 @@ import type {
   NewStoryFrame,
   NewStoryList,
   NewStoryListItem,
+  NewStoryCastNode,
   NewStorySheet,
   NewStoryStyleNode,
   NewTag,
@@ -47,6 +49,8 @@ import type {
   ProjectFolder,
   ProjectHomes,
   ProjectKind,
+  PackProgress,
+  PackStatus,
   PromptApply,
   PromptPlanProposal,
   PtyChunk,
@@ -55,6 +59,7 @@ import type {
   ReflowPreview,
   SceneApply,
   ScenePlanProposal,
+  SheetShot,
   Slot,
   SlotConfig,
   SlotPatch,
@@ -79,6 +84,7 @@ import type {
   StoryCut,
   StoryCutSegment,
   CutSegmentInput,
+  StoryCastNode,
   StoryStyleNode,
   StoryTake,
   SubdivideResult,
@@ -191,6 +197,31 @@ export const IPC = {
   sheetsCreate: 'sheets:create',
   sheetsUpdate: 'sheets:update',
   sheetsDelete: 'sheets:delete',
+  /** Metered: one image. Writes a candidate and does not touch the sheet. */
+  sheetsProposePortrait: 'sheets:proposePortrait',
+  /** The only call that makes a character real. One transaction. */
+  sheetsApprovePortrait: 'sheets:approvePortrait',
+  sheetsShots: 'sheets:shots',
+  sheetsDiscardShot: 'sheets:discardShot',
+  /** Back to described. Keeps every image, clears the pointer. */
+  sheetsUnlock: 'sheets:unlock',
+  /** Starts the background reference pack. Returns as soon as it is running. */
+  sheetsBuildPack: 'sheets:buildPack',
+  sheetsPackProgress: 'sheets:packProgress',
+  /** Placements: this character, on this board's canvas. Mirrors styleNodes. */
+  sheetsPlaced: 'sheets:placed',
+  sheetsPlace: 'sheets:place',
+  sheetsMoveNode: 'sheets:moveNode',
+  sheetsUnplace: 'sheets:unplace',
+  /**
+   * Reference-pack progress, pushed rather than invoked.
+   *
+   * Its own channel rather than a widening of `boardsJobProgress`. That one is
+   * single because there is one long-running-work indicator in the UI — and an
+   * invisible background pack is deliberately not it. Sharing the channel would
+   * light the generation UI up every few seconds for work nobody is waiting on.
+   */
+  castPackProgress: 'cast:packProgress',
   /** Opens a native picker for reference media. Returns the chosen paths. */
   mediaPick: 'media:pick',
 
@@ -272,6 +303,10 @@ export const IPC = {
   /** AI calls per minute, per feature slot. */
   settingsGetRate: 'settings:getRate',
   settingsSetRate: 'settings:setRate',
+  /** Every AI process, resolved: defaults with the user's edits merged in. */
+  settingsProcesses: 'settings:processes',
+  settingsSetProcess: 'settings:setProcess',
+  settingsResetProcess: 'settings:resetProcess',
   /**
    * Appearance and view preferences.
    *
@@ -519,6 +554,38 @@ export interface DeckApi {
     deleteSheet(id: string): Promise<void>
 
     /**
+     * Locking a character to a face.
+     *
+     * `proposePortrait` costs one metered image and writes a candidate; it does
+     * not touch the sheet, because what the user approves is *which image is
+     * them*. `approvePortrait` is the write that makes them real, and
+     * `buildPack` is the background work that follows it — started separately
+     * so that a pack which fails cannot unapprove anybody.
+     */
+    proposePortrait(sheetId: string, extra?: string): Promise<SheetShot>
+    approvePortrait(sheetId: string, shotId: string): Promise<StorySheet>
+    /** Fire-and-forget: progress arrives on `onPackProgress`. */
+    buildPack(sheetId: string): Promise<void>
+    packProgress(sheetId: string): Promise<PackStatus>
+    shots(sheetId: string): Promise<SheetShot[]>
+    /** Refused for the approved portrait — unlock the character first. */
+    discardShot(shotId: string): Promise<void>
+    unlockSheet(sheetId: string): Promise<StorySheet>
+
+    /**
+     * Placing a character on the board is what attaches their *image* to every
+     * generation on it. Their words are sent either way — placement adds the
+     * lock, it does not gate the description.
+     */
+    placedCast(boardId: string): Promise<StoryCastNode[]>
+    placeCast(input: NewStoryCastNode): Promise<StoryCastNode>
+    moveCastNode(id: string, x: number, y: number): Promise<StoryCastNode>
+    unplaceCast(id: string): Promise<void>
+
+    /** Returns an unsubscribe function. */
+    onPackProgress(handler: (update: PackProgress) => void): () => void
+
+    /**
      * Native file picker for reference media. Returns absolute paths and their
      * kind; nothing is copied, so these are the paths that get stored.
      */
@@ -575,7 +642,17 @@ export interface DeckApi {
     plan(
       frameIds: string[],
       takes: number
-    ): Promise<{ scenes: number; clips: number; seconds: number }>
+    ): Promise<{
+      scenes: number
+      clips: number
+      seconds: number
+      /**
+       * What the run cannot honour, if anything — more characters locked to
+       * the board than the provider takes references for, or a portrait gone
+       * missing. Null when everything the board is locked to will be sent.
+       */
+      castNotice: string | null
+    }>
     /** Submits, waits and downloads. Progress arrives on `onProgress`. */
     generate(
       frameId: string,
@@ -702,6 +779,26 @@ export interface DeckApi {
     /** AI calls allowed per minute, per feature slot. */
     rate(): Promise<number>
     setRate(perMinute: number): Promise<number>
+
+    /**
+     * The editable half of every AI prompt in the app.
+     *
+     * Resolved rather than raw: what comes back is the defaults with the user's
+     * overrides merged in and *validated* — blank roles fall back, pinned rules
+     * survive, and every limit is clamped. Showing the number the user typed
+     * while the app used a different one would be the worst of both, so this is
+     * what the panel renders.
+     */
+    processes(): Promise<ResolvedProcess[]>
+    setProcess(
+      id: ProcessId,
+      override: {
+        role?: string
+        rules?: string[]
+        limits?: Partial<ProcessLimits>
+      }
+    ): Promise<ResolvedProcess>
+    resetProcess(id: ProcessId): Promise<ResolvedProcess>
 
     /** Everything the UI remembers between launches, in one round trip. */
     prefs(): Promise<UiPrefs>

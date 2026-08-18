@@ -44,6 +44,14 @@ interface StoryboardState {
   error: string | null
 
   load(): Promise<void>
+  /**
+   * Read the board list again, whatever is already held.
+   *
+   * `load` is what a mount calls and it returns early once the store is ready.
+   * This is for the few places that genuinely need a re-read — after a restore,
+   * or a board created somewhere other than here.
+   */
+  refresh(): Promise<void>
   open(id: string): Promise<void>
   addBoard(input: NewStoryboard): Promise<Storyboard | null>
   patchBoard(id: string, patch: StoryboardPatch): Promise<void>
@@ -75,6 +83,24 @@ interface StoryboardState {
   addSheet(input: NewStorySheet): Promise<StorySheet | null>
   patchSheet(id: string, patch: StorySheetPatch): Promise<void>
   removeSheet(id: string): Promise<void>
+  /**
+   * Drop in a sheet that main has already written.
+   *
+   * Approving and unlocking a portrait are writes `useCast` owns — they are
+   * about the character's identity, not about the board — but the *sheet* lives
+   * here, so this is how the result gets back without either store reaching
+   * into the other's state.
+   */
+  replaceSheet(sheet: StorySheet): void
+  /**
+   * Take the frames a write already handed back.
+   *
+   * Applying a plan can create, rewrite and delete in one go, and the frames
+   * that come back are the truth about all three — so re-opening the board to
+   * ask again is six IPC round trips to learn what the last call already
+   * returned, on the click the user is waiting on.
+   */
+  setFrames(frames: StoryFrame[]): void
 
   dismissError(): void
 }
@@ -101,6 +127,16 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
   error: null,
 
   async load() {
+    // The store *is* the cache; it simply did not act like one. Every section
+    // switch unmounts this panel and remounts it, and the mount effect fired
+    // this every time — a fresh IPC round trip and a fresh SQLite read for a
+    // list already sitting in memory, on a gesture whose whole job is to be
+    // instant. Nothing here expires, so "already loaded" is the right answer.
+    if (get().ready) return
+    return get().refresh()
+  },
+
+  async refresh() {
     try {
       const boards = await api.storyboards.list()
       set({ boards, ready: true, error: null })
@@ -426,6 +462,16 @@ export const useStoryboards = create<StoryboardState>((set, get) => ({
       set({ error: message(err) })
       return null
     }
+  },
+
+  setFrames(frames) {
+    set({ frames })
+  },
+
+  replaceSheet(sheet) {
+    set((s) => ({
+      sheets: s.sheets.map((x) => (x.id === sheet.id ? sheet : x))
+    }))
   },
 
   async patchSheet(id, patch) {

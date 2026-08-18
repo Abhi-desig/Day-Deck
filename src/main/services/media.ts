@@ -5,6 +5,7 @@ import { MEDIA_SCHEME } from '@shared/types'
 import { getDb } from '../db'
 import { itemMediaPath } from '../db/storyboards'
 import { takePath } from './takes'
+import { shotPath } from './portraits'
 
 /**
  * Serving reference media the app links but does not own.
@@ -51,17 +52,21 @@ export function registerMediaScheme(): void {
 }
 
 /**
- * What this scheme answers: `deck-media://item/<id>` and `deck-media://take/<id>`.
+ * What this scheme answers: `deck-media://item/<id>`, `deck-media://take/<id>`
+ * and `deck-media://shot/<id>`.
  *
- * Two hosts, one rule. An item is media the user linked and the app looks its
- * path up; a take is a clip the app generated and owns, whose path is derived
- * from the id rather than stored anywhere. Neither URL contains a path.
+ * Three hosts, one rule. An item is media the user linked and the app looks its
+ * path up; a take is a clip the app generated and owns; a shot is a character
+ * image it generated and owns. For the two it owns the path is derived from the
+ * id rather than stored anywhere, and none of the three URLs contains a path.
  *
  * Exported for its tests. This is the whole security boundary of the scheme, so
  * it is worth asserting on directly rather than through a protocol handler that
  * needs a running Electron to exercise.
  */
-export type MediaRef = { host: 'item' | 'take'; id: string }
+export type MediaRef = { host: 'item' | 'take' | 'shot'; id: string }
+
+const HOSTS = new Set(['item', 'take', 'shot'])
 
 export function mediaRefFrom(url: string): MediaRef | null {
   let parsed: URL
@@ -71,7 +76,7 @@ export function mediaRefFrom(url: string): MediaRef | null {
     return null
   }
   if (parsed.protocol !== `${MEDIA_SCHEME}:`) return null
-  if (parsed.host !== 'item' && parsed.host !== 'take') return null
+  if (!HOSTS.has(parsed.host)) return null
 
   const id = decodeURIComponent(parsed.pathname.replace(/^\/+/, ''))
   // Ids are uuids from randomUUID. Anything with a separator in it is not an id
@@ -79,7 +84,7 @@ export function mediaRefFrom(url: string): MediaRef | null {
   if (!id || id.includes('/') || id.includes('\\') || id.includes('..')) {
     return null
   }
-  return { host: parsed.host, id }
+  return { host: parsed.host as MediaRef['host'], id }
 }
 
 /** The original single-host reader, kept because it is what the item path means. */
@@ -94,6 +99,7 @@ export function registerMediaProtocol(): void {
     if (!ref) return new Response(null, { status: 400 })
 
     if (ref.host === 'take') return serveTake(ref.id)
+    if (ref.host === 'shot') return serveShot(ref.id)
 
     let media: { path: string; kind: string | null } | null
     try {
@@ -130,7 +136,22 @@ export function registerMediaProtocol(): void {
  * so `<video>` gets Range handling and seeking for free.
  */
 async function serveTake(id: string): Promise<Response> {
-  const path = takePath(id)
+  return serveOwnedFile(takePath(id))
+}
+
+/**
+ * A generated character image.
+ *
+ * Identical to `serveTake` bar the directory, and identical for the same
+ * reason: the path is `<shotsDir>/<id>.png` by construction, so an id that
+ * names no shot simply is not a file and 404s. No database lookup at all.
+ */
+async function serveShot(id: string): Promise<Response> {
+  return serveOwnedFile(shotPath(id))
+}
+
+/** The shared half: a file the app owns, streamed with Range handling. */
+async function serveOwnedFile(path: string): Promise<Response> {
   try {
     if (!statSync(path).isFile()) return new Response(null, { status: 404 })
   } catch {

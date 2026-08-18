@@ -196,3 +196,21 @@ export const VIDEO_MODELS = /veo/i
  */
 export const isVideoModel = (id: string): boolean =>
   VIDEO_MODELS.test(id) && !/embed|upscale/i.test(id)
+
+/**
+ * The models the image slot may be pointed at.
+ *
+ * A third allowlist for the third question, and it does not meet either of the
+ * other two for the same reason they do not meet each other: "can this hold a
+ * conversation", "can this make a clip", and "can this make a still" are three
+ * different questions, and a model excluded from one has not thereby answered
+ * the others.
+ *
+ * Broad on purpose — the vendors name these models nothing like each other, and
+ * the endpoint is the real gate: a Gemini id only reaches the picker if the list
+ * endpoint also says it does `generateContent`.
+ */
+export const IMAGE_MODELS = /image|imagen|dall-?e|flux|photon/i
+
+export const isImageModel = (id: string): boolean =>
+  IMAGE_MODELS.test(id) && !/embed|vision-encoder|moderation/i.test(id)

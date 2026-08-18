@@ -23,3 +23,13 @@ export const mediaUrl = (itemId: string): string =>
  */
 export const takeUrl = (takeId: string): string =>
   `${MEDIA_SCHEME}://take/${encodeURIComponent(takeId)}`
+
+/**
+ * The URL for a generated character image.
+ *
+ * Same rule, third host. A shot's file is `<shotId>.png` inside the app's own
+ * directory, so the id is the whole path — an id that names nothing 404s rather
+ * than reaching for something else.
+ */
+export const shotUrl = (shotId: string): string =>
+  `${MEDIA_SCHEME}://shot/${encodeURIComponent(shotId)}`

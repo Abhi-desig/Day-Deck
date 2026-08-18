@@ -22,7 +22,13 @@ import type {
   StorySheet,
   StorySheetPatch
 } from '@shared/types'
-import { FRAME_H, FRAME_W, GOAL_COLORS, SHEET_KINDS } from '@shared/types'
+import {
+  FRAME_H,
+  FRAME_W,
+  GOAL_COLORS,
+  SHEET_KINDS,
+  isSheetStatus
+} from '@shared/types'
 import type { Db } from './index'
 
 /**
@@ -579,6 +585,10 @@ interface SheetRow {
   kind: string
   name: string
   description: string
+  status: string
+  source_prompt: string
+  portrait_id: string | null
+  locked_at: string | null
   sort_index: number
   created_at: string
 }
@@ -592,6 +602,14 @@ const toSheet = (r: SheetRow): StorySheet => ({
   kind: isSheetKind(r.kind) ? r.kind : 'character',
   name: r.name,
   description: r.description,
+  // Read defensively: the column has no CHECK on it by design, so a value this
+  // build does not know reads back as the state that touches nothing.
+  status: isSheetStatus(r.status) ? r.status : 'described',
+  // Empty falls back to the description, which is what makes "type it once"
+  // true — the portrait prompt is the character unless someone says otherwise.
+  sourcePrompt: r.source_prompt.trim() || r.description,
+  portraitId: r.portrait_id,
+  lockedAt: r.locked_at,
   sortIndex: r.sort_index,
   createdAt: r.created_at
 })
@@ -645,6 +663,7 @@ const SHEET_PATCH_COLUMNS: Record<keyof StorySheetPatch, string> = {
   kind: 'kind',
   name: 'name',
   description: 'description',
+  sourcePrompt: 'source_prompt',
   sortIndex: 'sort_index'
 }
 
@@ -676,6 +695,29 @@ export function updateSheet(
 
 export function deleteSheet(db: Db, id: string): void {
   db.prepare(`DELETE FROM storyboard_sheets WHERE id = ?`).run(id)
+}
+
+/**
+ * Every character on a board that is locked to an approved portrait.
+ *
+ * The read `services/video.ts` makes before a generation. Placement is the
+ * gesture that means "lock this board to this person", and a sheet with no
+ * approved portrait has no image to lock with — so both conditions are asked
+ * here rather than filtered by the caller, which is what stops a described-only
+ * character reaching the generator as a reference that does not exist.
+ */
+export function listLockedCastOnBoard(db: Db, boardId: string): StorySheet[] {
+  return db
+    .prepare<[string], SheetRow>(
+      `SELECT s.* FROM storyboard_sheets s
+         JOIN storyboard_cast_nodes n ON n.sheet_id = s.id
+        WHERE n.board_id = ?
+          AND s.status = 'locked'
+          AND s.portrait_id IS NOT NULL
+        ORDER BY s.sort_index ASC, s.created_at ASC`
+    )
+    .all(boardId)
+    .map(toSheet)
 }
 
 /* ------------------------------------------------------------------ wires */

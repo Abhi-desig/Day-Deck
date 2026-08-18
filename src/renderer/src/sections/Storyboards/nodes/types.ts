@@ -7,6 +7,7 @@ import type {
   StoryTake
 } from '@shared/types'
 import type { StyleNodeType } from './StyleNode'
+import type { CastNodeType } from './CastNode'
 
 /**
  * Node ids are namespaced.
@@ -20,6 +21,7 @@ export const nodeId = {
   scene: (frameId: string) => `scene:${frameId}`,
   list: (listId: string) => `list:${listId}`,
   style: (styleNodeId: string) => `style:${styleNodeId}`,
+  cast: (castNodeId: string) => `cast:${castNodeId}`,
   /** The container holding every scene. One per board, so keyed by the board. */
   group: (boardId: string) => `group:${boardId}`,
   /** The cut. Also one per board, for the same reason. */
@@ -99,6 +101,16 @@ export const HANDLE = {
   /** Film-wide references arrive at the bottom, styles at the left — a brief
       takes two kinds of inbound wire and they must not land on one point. */
   briefRefIn: 'brief-ref-in',
+  /**
+   * Where a placed character lands.
+   *
+   * A third handle rather than a share of `briefStyleIn`, for the reason that
+   * already split the first two: a brief takes several kinds of inbound wire
+   * and they must not all arrive at one point. A style and a character are
+   * saying different things about the film — how it is shot, and who is in it —
+   * and a graph where those wires overlap is a graph you cannot read.
+   */
+  briefCastIn: 'brief-cast-in',
   sceneBriefIn: 'scene-brief-in',
   sceneRefIn: 'scene-ref-in',
   /**
@@ -173,6 +185,7 @@ export type BoardNode =
   | SceneGroupNodeType
   | TimelineNodeType
   | StyleNodeType
+  | CastNodeType
 
 /**
  * The drag payload type for dropping a saved style onto the canvas.
@@ -181,3 +194,12 @@ export type BoardNode =
  * from somewhere else in the app cannot be mistaken for a style.
  */
 export const STYLE_DRAG_TYPE = 'application/x-day-deck-style'
+
+/**
+ * The drag payload type for dropping a locked character onto the canvas.
+ *
+ * Its own MIME type for the same reason styles have one, and carrying only the
+ * sheet id: a stray text drag cannot be mistaken for a character, and the canvas
+ * looks the character up rather than trusting what it was handed.
+ */
+export const CAST_DRAG_TYPE = 'application/x-day-deck-character'

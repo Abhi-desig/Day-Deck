@@ -7,7 +7,7 @@ import {
   type VideoJobProgress
 } from '@shared/types'
 import type { Db } from '../db'
-import { getBoard, getFrame } from '../db/storyboards'
+import { getBoard, getFrame, listLockedCastOnBoard } from '../db/storyboards'
 import {
   createJob,
   createTake,
@@ -16,7 +16,9 @@ import {
   updateJob
 } from '../db/takes'
 import { AiError, callContext, modelFor, videoAdapterFor } from './providers'
+import type { ImageInput } from './providers/image-wire'
 import type { VideoAdapter, VideoOperation } from './providers/video-wire'
+import { readShotFile } from './portraits'
 import { deleteTakeFile, takeFileName, writeTakeFile } from './takes'
 
 /**
@@ -61,13 +63,102 @@ export function generationPlan(
   db: Db,
   frameIds: string[],
   takes: number
-): { scenes: number; clips: number; seconds: number } {
+): {
+  scenes: number
+  clips: number
+  seconds: number
+  /** Said before anything is submitted when the reference clamp bites. */
+  castNotice: string | null
+} {
   const frames = frameIds.map((id) => getFrame(db, id))
   const seconds = frames.reduce((n, f) => n + (f.durationSec ?? 8), 0)
   return {
     scenes: frames.length,
     clips: frames.length * takes,
-    seconds: seconds * takes
+    seconds: seconds * takes,
+    castNotice: frames.length ? castNoticeFor(db, frames[0].boardId) : null
+  }
+}
+
+/**
+ * The characters a board is locked to, resolved to bytes and clamped.
+ *
+ * Placement is the gesture that means "lock this film to this person", and only
+ * a character with an approved portrait has an image to lock with — both
+ * conditions are asked in the query, so nothing described-only can reach here.
+ *
+ * The clamp is the part that matters. A reference sent where one is not
+ * accepted is silently ignored: the run succeeds, the bill is the same, and the
+ * clip comes back with the wrong person in it. So the ceiling comes off the
+ * adapter, and whatever falls outside it is *reported*, not dropped quietly.
+ */
+function resolveCast(
+  db: Db,
+  boardId: string,
+  wire: VideoAdapter
+): { references: ImageInput[]; notice: string | null } {
+  const locked = listLockedCastOnBoard(db, boardId)
+  if (locked.length === 0) return { references: [], notice: null }
+
+  const kept = locked.slice(0, wire.maxReferenceImages)
+  const dropped = locked.slice(wire.maxReferenceImages)
+
+  const references = kept.flatMap((sheet) => {
+    if (!sheet.portraitId) return []
+    try {
+      return [
+        { bytes: readShotFile(sheet.portraitId), mimeType: 'image/png' }
+      ]
+    } catch {
+      // The row says there is a portrait and the file is gone. Skipping it is
+      // right — but it must not be silent, so it falls into `dropped` below by
+      // simply not being here, and the count mismatch is what says so.
+      return []
+    }
+  })
+
+  return {
+    references,
+    notice: noticeFor(kept.length, references.length, locked, dropped)
+  }
+}
+
+const names = (sheets: { name: string }[]): string =>
+  sheets.map((s) => s.name.trim() || 'unnamed').join(' and ')
+
+function noticeFor(
+  keptCount: number,
+  resolved: number,
+  locked: { name: string }[],
+  dropped: { name: string }[]
+): string | null {
+  if (dropped.length === 0 && resolved === keptCount) return null
+
+  const parts: string[] = []
+  if (dropped.length > 0) {
+    parts.push(
+      resolved === 0
+        ? `${locked.length} character${locked.length === 1 ? ' is' : 's are'} locked to this board and this provider takes no reference image, so ${names(locked)} ${locked.length === 1 ? 'is' : 'are'} described in the prompt only — the words still travel, the face is not pinned.`
+        : `${locked.length} characters are locked to this board and this provider takes ${keptCount}. Only ${names(locked.slice(0, keptCount))} will be locked by image; ${names(dropped)} ${dropped.length === 1 ? 'is' : 'are'} described in the prompt only.`
+    )
+  }
+  if (resolved < keptCount && dropped.length === 0) {
+    parts.push(
+      'An approved portrait is missing from disk, so that character is described in the prompt only. Regenerate and re-approve their portrait to lock them by image again.'
+    )
+  }
+  return parts.join(' ')
+}
+
+/** The same sentence, for a confirmation that runs before any submission. */
+function castNoticeFor(db: Db, boardId: string): string | null {
+  try {
+    const ctx = callContext(db, 'video')
+    return resolveCast(db, boardId, videoAdapterFor(ctx.provider)).notice
+  } catch {
+    // A slot that is not configured yet has no notice to give, and the plan is
+    // not the place that reports it — Generate will say so in its own words.
+    return null
   }
 }
 
@@ -118,6 +209,11 @@ export async function generate(
   // silently receiving one would be a shortfall on something metered.
   const takes = Math.min(clampTakes(options.takes ?? 1), wire.maxSamples)
 
+  // The actual lock. Resolved before the job row, like everything else that can
+  // refuse the run, so a board whose characters cannot be honoured fails with a
+  // sentence and leaves nothing behind.
+  const { references, notice } = resolveCast(db, board.id, wire)
+
   const job = createJob(db, {
     boardId: board.id,
     frameId,
@@ -126,7 +222,9 @@ export async function generate(
     prompt
   })
 
-  send({ phase: 'submitting', jobId: job.id, frameId })
+  // The notice rides the submitting event so the row says it before the wait
+  // starts, not after the clip comes back with the wrong person in it.
+  send({ phase: 'submitting', jobId: job.id, frameId, notice })
 
   try {
     const operation = await wire.submit(ctx, {
@@ -134,7 +232,8 @@ export async function generate(
       prompt,
       durationSec: frame.durationSec,
       sampleCount: takes,
-      aspectRatio: options.aspectRatio ?? DEFAULT_ASPECT
+      aspectRatio: options.aspectRatio ?? DEFAULT_ASPECT,
+      references
     })
 
     // Written before the first sleep, which is the whole point of the row.

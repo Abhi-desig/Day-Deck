@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
 import { MIGRATIONS } from '../src/main/db/migrations'
+import { styleCategoryMigration } from '../src/main/db/style-pack'
 
 /**
  * `makeDb()` builds every schema from scratch, which is the one path a real
@@ -592,5 +593,161 @@ describe('v12 — jobs and takes', () => {
 
     expect(() => insert('transcode', 'running')).toThrow()
     expect(() => insert('generate', 'pending')).toThrow()
+  })
+})
+
+/**
+ * v15 — the character system, and the style library filed into families.
+ *
+ * Two features in one entry because they land in one release. Nothing here
+ * rebuilds a table, so the real question is whether a v14 database with rows in
+ * it walks forward with every one of those rows intact and usable.
+ */
+describe('v15 against a v14 database with data in it', () => {
+  function v14(): Database.Database {
+    const db = dbAtVersion(14)
+    db.prepare(
+      `INSERT INTO storyboards (id, title, brief, visual_style, color,
+                                sort_index, created_at)
+       VALUES ('b1', 'Launch film', 'A brief', '', 'amber', 0, 'now')`
+    ).run()
+    db.prepare(
+      `INSERT INTO storyboard_sheets
+         (id, board_id, kind, name, description, sort_index, created_at)
+       VALUES ('s1', 'b1', 'character', 'Maya', 'grey hoodie', 0, 'now')`
+    ).run()
+    return db
+  }
+
+  it('leaves an existing character described and unlocked', () => {
+    const db = v14()
+    migrate(db)
+
+    const row = db
+      .prepare<[], {
+        name: string
+        status: string
+        source_prompt: string
+        portrait_id: string | null
+        locked_at: string | null
+      }>(`SELECT * FROM storyboard_sheets WHERE id = 's1'`)
+      .get()
+
+    expect(row?.name).toBe('Maya')
+    expect(row?.status).toBe('described')
+    // Empty rather than a copy of the description: the read layer falls back,
+    // so nothing has to be written twice and nothing can drift.
+    expect(row?.source_prompt).toBe('')
+    expect(row?.portrait_id).toBeNull()
+    expect(row?.locked_at).toBeNull()
+  })
+
+  it('allows one pack image per view and refuses a duplicate', () => {
+    const db = v14()
+    migrate(db)
+
+    const insert = (id: string, kind: string, view: string) =>
+      db
+        .prepare(
+          `INSERT INTO storyboard_sheet_shots
+             (id, sheet_id, kind, view, file_name, model, prompt, poster,
+              sort_index, created_at)
+           VALUES (?, 's1', ?, ?, ?, '', '', NULL, 0, 'now')`
+        )
+        .run(id, kind, view, `${id}.png`)
+
+    insert('sh1', 'pack', 'profile')
+    expect(() => insert('sh2', 'pack', 'profile')).toThrow()
+    // Candidates are outside the index — every one is kept, and they all have
+    // the same empty view.
+    insert('sh3', 'candidate', '')
+    insert('sh4', 'candidate', '')
+  })
+
+  it('cascades a character’s images and placements when the board goes', () => {
+    const db = v14()
+    migrate(db)
+
+    db.prepare(
+      `INSERT INTO storyboard_sheet_shots
+         (id, sheet_id, kind, view, file_name, model, prompt, poster,
+          sort_index, created_at)
+       VALUES ('sh1', 's1', 'candidate', '', 'sh1.png', '', '', NULL, 0, 'now')`
+    ).run()
+    db.prepare(
+      `INSERT INTO storyboard_cast_nodes (id, board_id, sheet_id, x, y, created_at)
+       VALUES ('cn1', 'b1', 's1', 0, 0, 'now')`
+    ).run()
+
+    db.prepare(`DELETE FROM storyboards WHERE id = 'b1'`).run()
+
+    for (const table of ['storyboard_sheet_shots', 'storyboard_cast_nodes']) {
+      const n = db
+        .prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)
+        .get()
+      expect(n?.n).toBe(0)
+    }
+  })
+
+  it('places a character on a board at most once', () => {
+    const db = v14()
+    migrate(db)
+
+    const place = (id: string) =>
+      db
+        .prepare(
+          `INSERT INTO storyboard_cast_nodes (id, board_id, sheet_id, x, y, created_at)
+           VALUES (?, 'b1', 's1', 0, 0, 'now')`
+        )
+        .run(id)
+
+    place('cn1')
+    expect(() => place('cn2')).toThrow()
+  })
+
+  it('files the shipped pack by name and leaves a hand-written style alone', () => {
+    const db = dbAtVersion(14)
+    // The user's own look, and their own edit of one of ours.
+    db.prepare(
+      `INSERT INTO video_styles
+         (id, name, video_style, camera, lens, grade, lighting, film_stock,
+          aspect, extras, source_text, color, sort_index, created_at)
+       VALUES ('mine', 'My own look', '', '', '', '', '', '', '', '[]', '',
+               'amber', 99, 'now')`
+    ).run()
+
+    migrate(db)
+
+    const category = (name: string) =>
+      db
+        .prepare<[string], { category: string }>(
+          `SELECT category FROM video_styles WHERE name = ?`
+        )
+        .get(name)?.category
+
+    expect(category('SCOPE')).toBe('cinema')
+    expect(category('WET NEON')).toBe('night')
+    expect(category('THUMBPRINT')).toBe('stylised')
+    // Nothing the user wrote moves. Uncategorised is a real answer with its own
+    // group in the panel, not a gap to be filled in on their behalf.
+    expect(category('My own look')).toBe('')
+  })
+
+  it('does not re-file a pack style the user has already categorised', () => {
+    const db = dbAtVersion(14)
+    migrate(db)
+    db.prepare(`UPDATE video_styles SET category = 'analog' WHERE name = 'SCOPE'`).run()
+    // Re-running the filing statements must be a no-op: each UPDATE is guarded
+    // on `category = ''`, so their filing wins the way their wording already
+    // does. Run on their own rather than through MIGRATIONS[14], which also
+    // carries the ALTERs and is only ever applied once.
+    db.exec(styleCategoryMigration())
+
+    const row = db
+      .prepare<[], { category: string }>(
+        `SELECT category FROM video_styles WHERE name = 'SCOPE'`
+      )
+      .get()
+    expect(row?.category).toBe('analog')
   })
 })

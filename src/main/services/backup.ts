@@ -42,6 +42,8 @@ export const TABLES = [
   'storyboard_list_items',
   // The cast: board-scoped, so it only has to follow storyboards.
   'storyboard_sheets',
+  // Every image generated for a character, which references the sheet.
+  'storyboard_sheet_shots',
   // Generation jobs reference a board and a frame, so both come first.
   'storyboard_jobs',
   // And a take references a frame and the job that produced it.
@@ -56,6 +58,8 @@ export const TABLES = [
   'storyboard_brief_refs',
   // And this one references a board and a style, so it follows both.
   'storyboard_style_nodes',
+  // Same shape for the cast: a board and a sheet, so it follows both.
+  'storyboard_cast_nodes',
   // Slots second-to-last: rolled_from is a self-reference, handled below.
   'slots',
   // And their attachments after them, since slot_tags references both ends.
