@@ -89,6 +89,17 @@ export interface RequestOptions {
    * content type is the file's, not `application/json`.
    */
   raw?: Buffer
+  /**
+   * A multipart body, instead of JSON.
+   *
+   * Only `/images/edits` needs this, and it needs it absolutely: a reference
+   * image cannot be expressed on that endpoint any other way. When set, `body`
+   * and `raw` are ignored and **no `content-type` is added** — `fetch` writes
+   * one containing the multipart boundary it generated, and a header set here
+   * would overwrite it with one whose boundary is wrong, which the server reads
+   * as a malformed body.
+   */
+  form?: FormData
 }
 
 /** 1s, 3s — a blip either clears on its own that fast or is not a blip. */
@@ -286,6 +297,31 @@ export async function requestBinary(
  * empty body, so `request` — which parses the body as JSON — cannot express it.
  * Returns both, and leaves reading them to the one adapter that cares.
  */
+/**
+ * The same call, with a multipart body.
+ *
+ * A third sibling of `request` for the same reason `requestBinary` is the
+ * second: `request` is JSON at both ends by construction — it stringifies every
+ * body — and an image reference is a file, not a field in a JSON document.
+ * What the two share is everything above the last line: the timeout, what
+ * counts as a rejected key, what is worth retrying and how long to ride out an
+ * overloaded model. That is `send`, and it is why a refused image edit reads
+ * the same as a refused prompt instead of getting its own worse copy.
+ */
+export async function requestMultipart(
+  ctx: CallContext,
+  path: string,
+  form: FormData,
+  options: RequestOptions = {}
+): Promise<unknown> {
+  const response = await send(ctx, path, {
+    method: 'POST',
+    ...options,
+    form
+  })
+  return response.json()
+}
+
 export async function requestWithHeaders(
   ctx: CallContext,
   path: string,
@@ -313,7 +349,8 @@ async function send(
     timeoutMs = 30_000,
     attempts = 3,
     absolute = false,
-    raw
+    raw,
+    form
   }: RequestOptions = {}
 ): Promise<Response> {
   let waitMs = 0
@@ -336,9 +373,11 @@ async function send(
         method,
         headers: {
           ...headers,
-          ...(body && !raw ? { 'content-type': 'application/json' } : {})
+          ...(body && !raw && !form
+            ? { 'content-type': 'application/json' }
+            : {})
         },
-        body: raw ?? (body ? JSON.stringify(body) : undefined),
+        body: form ?? raw ?? (body ? JSON.stringify(body) : undefined),
         signal: AbortSignal.timeout(timeoutMs)
       })
     } catch (err) {

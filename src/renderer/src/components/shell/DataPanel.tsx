@@ -5,6 +5,8 @@ import { useCurriculum } from '../../store/useCurriculum'
 import { useDeck } from '../../store/useDeck'
 import { useShell } from '../../store/useShell'
 import { useStickers } from '../../store/useStickers'
+import { useStoryboards } from '../../store/useStoryboards'
+import { useStyles } from '../../store/useStyles'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { LAYER, useHotkeys } from '../../lib/keyboard'
@@ -94,10 +96,16 @@ export function DataPanel() {
       // Everything in the renderer is now describing a database that no longer
       // exists. Reloading each store is cheaper and far less alarming than
       // asking the user to restart the app.
+      // `refresh` rather than `load` for the two stores that now cache: their
+      // `load` returns early once ready, which is exactly right for a section
+      // switch and exactly wrong here — the rows it is holding came out of a
+      // database that has just been replaced.
       await Promise.all([
         useDeck.getState().reloadAll(),
         useCurriculum.getState().load(),
-        useStickers.getState().load()
+        useStickers.getState().load(),
+        useStoryboards.getState().refresh(),
+        useStyles.getState().refresh()
       ])
       await reload()
     } catch (err) {
@@ -256,8 +264,9 @@ export function DataPanel() {
                   <div className="min-w-0 flex-1">
                     <div className="text-[12.5px] text-ink">Open at login</div>
                     <div className="text-[11px] text-ink-faint">
-                      Starts hidden, so the day is already rolled over when you
-                      look.
+                      Opens the deck when you sign in, already rolled over — and
+                      with no launch to wait through, because it is running
+                      before you go looking for it.
                     </div>
                   </div>
                 </div>

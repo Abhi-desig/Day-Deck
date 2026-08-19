@@ -24,11 +24,32 @@ export interface StyleSeed {
   aspect: string
   /** The full prompt the look came from, plus its style-specific negative. */
   sourceText: string
+  /**
+   * Which family it belongs to. Read by `styleCategoryMigration` only.
+   *
+   * Safe to add to this shape *because* v14's generated SQL does not reference
+   * it — `stylePackMigration()` is shipped and is never edited, and the only
+   * thing keeping that true is that the field it does not know about stays
+   * unused by it. Keep it that way.
+   */
+  category: StyleCategory
 }
+
+/** The ids in `STYLE_CATEGORIES`. Duplicated as a type only, so a typo fails to compile. */
+type StyleCategory =
+  | 'cinema'
+  | 'documentary'
+  | 'analog'
+  | 'night'
+  | 'editorial'
+  | 'macro'
+  | 'stylised'
+  | 'landscape'
 
 export const STYLE_PACK: readonly StyleSeed[] = [
   {
     name: 'MIDNIGHT LEXINGTON',
+    category: 'documentary',
     videoStyle: 'gritty urban indie, documentary realism',
     camera: 'handheld tracking, natural micro-shake',
     lens: '24mm wide, slight barrel distortion, close-focus',
@@ -42,6 +63,7 @@ Avoid: gimbal-smooth motion, drone shot, slow motion, HDR glow, over-saturated c
   },
   {
     name: 'FRONT CAMERA',
+    category: 'documentary',
     videoStyle: 'lo-fi realism, unretouched phone capture',
     camera: 'handheld phone, visible shake, off-centre framing',
     lens: 'phone wide 26mm equivalent, digital',
@@ -55,6 +77,7 @@ Avoid: cinematic, colour graded, film grain, shallow depth of field, professiona
   },
   {
     name: 'PORTRA SUNDAY',
+    category: 'analog',
     videoStyle: 'analog nostalgia, soft editorial',
     camera: 'static shot, gentle drift',
     lens: 'medium 50mm, gentle vignette',
@@ -68,6 +91,7 @@ Stock swaps: Kodachrome 64 · Fujifilm Superia · Cinestill 800T · Fuji Pro 160
   },
   {
     name: 'SILVER RETENTION',
+    category: 'analog',
     videoStyle: 'gritty crime drama, raw and bleak',
     camera: 'tight handheld, aggressive snap zoom',
     lens: '35mm, hard punch-in',
@@ -81,6 +105,7 @@ Avoid: warm tones, saturated colours, soft lighting, pastel, lifted blacks.`
   },
   {
     name: 'SILK HOUR',
+    category: 'editorial',
     videoStyle: 'Vogue-style editorial fashion film',
     camera: 'slow push-in dolly, subject stationary',
     lens: '85mm portrait, shallow depth of field',
@@ -94,6 +119,7 @@ Avoid: handheld shake, harsh shadows, cluttered background, amateur, flat lighti
   },
   {
     name: 'WET NEON',
+    category: 'night',
     videoStyle: 'cyberpunk neon, rain-soaked night city',
     camera: 'low ground-level tracking',
     lens: '24mm anamorphic, horizontal blue flare',
@@ -105,6 +131,7 @@ Avoid: handheld shake, harsh shadows, cluttered background, amateur, flat lighti
   },
   {
     name: 'AUBERGINE HOURS',
+    category: 'editorial',
     videoStyle: 'dark academia, contemplative interior',
     camera: 'slow lateral drift',
     lens: '50mm, slow rack focus',
@@ -116,6 +143,7 @@ Avoid: handheld shake, harsh shadows, cluttered background, amateur, flat lighti
   },
   {
     name: 'COLD MONOLITH',
+    category: 'cinema',
     videoStyle: 'Christopher Nolan cinematography, IMAX scale',
     camera: 'slow deliberate glide, restrained',
     lens: 'Zeiss Supreme Prime 35mm on ARRI Alexa 65',
@@ -129,6 +157,7 @@ Director swaps: Wes Anderson · Denis Villeneuve · Wong Kar-wai · Emmanuel Lub
   },
   {
     name: 'LIGHT TRAILS',
+    category: 'night',
     videoStyle: 'long-exposure night kinetics',
     camera: 'locked static, world moving through frame',
     lens: '24mm, deep focus',
@@ -142,6 +171,7 @@ Avoid: everything sharp, frozen motion, flash photography, camera movement.`
   },
   {
     name: 'SILVER VALLEY',
+    category: 'landscape',
     videoStyle: 'ethereal atmospheric landscape',
     camera: 'very slow reveal pan',
     lens: '24mm wide, deep focus',
@@ -153,6 +183,7 @@ Avoid: everything sharp, frozen motion, flash photography, camera movement.`
   },
   {
     name: 'BODY LOCK',
+    category: 'documentary',
     videoStyle: 'psychological intensity, disorienting POV',
     camera: 'snorricam body-mounted, subject locked centre',
     lens: '18mm ultra-wide, heavy edge distortion',
@@ -164,6 +195,7 @@ Avoid: everything sharp, frozen motion, flash photography, camera movement.`
   },
   {
     name: 'THUMBPRINT',
+    category: 'stylised',
     videoStyle: 'stop-motion clay animation',
     camera: 'locked-off, tiny incremental moves',
     lens: '50mm macro, shallow tabletop depth',
@@ -177,6 +209,7 @@ Avoid: smooth motion, photorealistic, 3D render, CGI, motion blur.`
   },
   {
     name: 'SUBSURFACE',
+    category: 'macro',
     videoStyle: 'gummy jelly ASMR tactility',
     camera: 'very slow macro push',
     lens: '100mm macro, extreme close focus',
@@ -188,6 +221,7 @@ Avoid: smooth motion, photorealistic, 3D render, CGI, motion blur.`
   },
   {
     name: 'GOOD SLOP',
+    category: 'stylised',
     videoStyle: 'deliberate early-AI artifacting',
     camera: 'drifting, unmotivated',
     lens: 'undefined, inconsistent',
@@ -201,6 +235,7 @@ No negative prompt — drop it entirely and use an older or smaller model. Fight
   },
   {
     name: 'FISHEYE VHS',
+    category: 'analog',
     videoStyle: '90s skate video, VHS analog',
     camera: 'low crouched follow, inches off the ground',
     lens: '8mm circular fisheye, extreme barrel distortion',
@@ -214,6 +249,7 @@ Avoid: sharp, clean, stabilised, modern, high definition, colour graded.`
   },
   {
     name: 'PROBE',
+    category: 'macro',
     videoStyle: 'hyperreal macro, commercial food/product',
     camera: 'continuous probe travel through the scene',
     lens: '24mm probe lens, deep focus macro',
@@ -227,6 +263,7 @@ Avoid: flat lighting, handheld shake, grain, soft focus.`
   },
   {
     name: 'MINIATURE CITY',
+    category: 'stylised',
     videoStyle: 'tilt-shift miniature illusion',
     camera: 'locked high angle, slight time-lapse speed-up',
     lens: '45mm tilt-shift, extreme selective focus plane',
@@ -238,6 +275,7 @@ Avoid: flat lighting, handheld shake, grain, soft focus.`
   },
   {
     name: 'SCOPE',
+    category: 'cinema',
     videoStyle: 'anamorphic cinema, classic scope',
     camera: 'slow lateral dolly, deliberate',
     lens: '40mm anamorphic, oval bokeh, horizontal flare',
@@ -289,4 +327,23 @@ export function stylePackMigration(): string {
     SELECT 1 FROM video_styles WHERE lower(trim(name)) = lower(trim(${quote(style.name)}))
   );`
   }).join('\n\n')
+}
+
+/**
+ * The pack, filed into families.
+ *
+ * A second migration rather than an edit to the first, because the first is
+ * shipped and forward-only migrations are never edited. Each UPDATE is guarded
+ * on `category = ''` and matched on `lower(trim(name))`, for exactly the reason
+ * the pack seeds by name: a library that already holds MIDNIGHT LEXINGTON holds
+ * *the user's* version of it, and if they have already filed it their filing
+ * wins. A style they wrote themselves is never touched at all — it is not in
+ * this list, so it stays uncategorised until they say otherwise.
+ */
+export function styleCategoryMigration(): string {
+  return STYLE_PACK.map(
+    (style) =>
+      `UPDATE video_styles SET category = ${quote(style.category)}
+     WHERE category = '' AND lower(trim(name)) = lower(trim(${quote(style.name)}));`
+  ).join('\n')
 }

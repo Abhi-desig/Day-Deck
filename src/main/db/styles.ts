@@ -8,7 +8,7 @@ import type {
   VideoStyle,
   VideoStylePatch
 } from '@shared/types'
-import { GOAL_COLORS } from '@shared/types'
+import { GOAL_COLORS, isStyleCategory } from '@shared/types'
 import type { Db } from './index'
 
 /**
@@ -37,6 +37,7 @@ interface StyleRow {
   aspect: string
   extras: string
   source_text: string
+  category: string
   color: string
   sort_index: number
   created_at: string
@@ -74,6 +75,10 @@ const toStyle = (r: StyleRow): VideoStyle => ({
   aspect: r.aspect,
   extras: parseExtras(r.extras),
   sourceText: r.source_text,
+  // Read defensively, exactly like the colour beside it: a category this build
+  // has never heard of — from a newer version, or a hand-edited row — reads
+  // back as uncategorised rather than crashing a board load.
+  category: isStyleCategory(r.category) ? r.category : '',
   color: isGoalColor(r.color) ? r.color : 'amber',
   sortIndex: r.sort_index,
   createdAt: r.created_at
@@ -114,8 +119,8 @@ export function createStyle(db: Db, input: NewVideoStyle): VideoStyle {
   db.prepare(
     `INSERT INTO video_styles
        (id, name, video_style, camera, lens, grade, lighting, film_stock,
-        aspect, extras, source_text, color, sort_index, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        aspect, extras, source_text, category, color, sort_index, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name.trim(),
@@ -128,6 +133,7 @@ export function createStyle(db: Db, input: NewVideoStyle): VideoStyle {
     (input.aspect ?? '').trim(),
     JSON.stringify(input.extras ?? []),
     (input.sourceText ?? '').trim(),
+    isStyleCategory(input.category) ? input.category : '',
     input.color ?? nextColor(db),
     input.sortIndex ?? next?.next ?? 0,
     new Date().toISOString()
@@ -147,6 +153,7 @@ const STYLE_PATCH_COLUMNS: Record<keyof VideoStylePatch, string> = {
   aspect: 'aspect',
   extras: 'extras',
   sourceText: 'source_text',
+  category: 'category',
   color: 'color',
   sortIndex: 'sort_index'
 }

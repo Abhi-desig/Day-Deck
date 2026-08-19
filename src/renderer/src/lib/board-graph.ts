@@ -9,6 +9,8 @@ import type {
   StoryList,
   StoryListItem,
   Storyboard,
+  StoryCastNode,
+  StorySheet,
   StoryStyleNode,
   VideoStyle
 } from '@shared/types'
@@ -40,6 +42,10 @@ export interface BoardGraphInput {
   briefRefs: StoryBriefRef[]
   placedStyles: StoryStyleNode[]
   styleLibrary: VideoStyle[]
+  /** Characters placed on this board — the ones whose portrait is attached. */
+  placedCast: StoryCastNode[]
+  /** The board's whole cast, to resolve a placement to a person. */
+  sheets: StorySheet[]
   /**
    * Whether scenes are rows in one container or cards you position.
    *
@@ -107,6 +113,8 @@ export function buildBoardNodes({
   briefRefs,
   placedStyles,
   styleLibrary,
+  placedCast,
+  sheets,
   sceneLayout,
   cut,
   takes
@@ -204,6 +212,22 @@ export function buildBoardNodes({
     ]
   })
 
+  const castNodes: BoardNode[] = placedCast.flatMap((placement) => {
+    const sheet = sheets.find((x) => x.id === placement.sheetId)
+    // A placement whose sheet has not loaded yet simply is not drawn, rather
+    // than drawn as a card with nobody in it — the style node's rule, and the
+    // same reason.
+    if (!sheet) return []
+    return [
+      {
+        id: nodeId.cast(placement.id),
+        type: 'cast' as const,
+        position: { x: placement.x, y: placement.y },
+        data: { sheet, placementId: placement.id }
+      }
+    ]
+  })
+
   // Unlike the container, the timeline's position is stored — it is a node the
   // user arranges relative to everything else, so it drags and stays put.
   const timelineNodes: BoardNode[] = cut
@@ -226,6 +250,7 @@ export function buildBoardNodes({
     brief,
     ...listNodes,
     ...styleNodes,
+    ...castNodes,
     ...sceneNodes,
     ...timelineNodes
   ]
@@ -238,6 +263,7 @@ export function buildBoardEdges({
   refs,
   briefRefs,
   placedStyles,
+  placedCast,
   sceneLayout,
   cut
 }: Pick<
@@ -248,6 +274,7 @@ export function buildBoardEdges({
   | 'refs'
   | 'briefRefs'
   | 'placedStyles'
+  | 'placedCast'
   | 'sceneLayout'
   | 'cut'
 >): Edge[] {
@@ -344,6 +371,19 @@ export function buildBoardEdges({
     style: { stroke: 'var(--color-line)', strokeWidth: 1.5 }
   }))
 
+  // And the same for a placed character, on its own handle. Derived for the
+  // identical reason: one brief per board, so the attachment is implied by the
+  // placement and a row could only ever agree with it or be wrong.
+  const castAttachments: Edge[] = placedCast.map((placement) => ({
+    id: `cast:${placement.id}`,
+    source: nodeId.cast(placement.id),
+    target: nodeId.brief(board.id),
+    targetHandle: HANDLE.briefCastIn,
+    deletable: false,
+    selectable: false,
+    style: { stroke: 'var(--color-amber)', strokeWidth: 1.5, opacity: 0.7 }
+  }))
+
   // The cut is fed by the scenes. Derived like the spine, and for the same
   // reason: there is one timeline per board and one place the clips come from,
   // so an edge row could only ever agree with that or be wrong.
@@ -363,5 +403,12 @@ export function buildBoardEdges({
       ]
     : []
 
-  return [...spine, ...attachments, ...wires, ...briefWires, ...cutWire]
+  return [
+    ...spine,
+    ...attachments,
+    ...castAttachments,
+    ...wires,
+    ...briefWires,
+    ...cutWire
+  ]
 }

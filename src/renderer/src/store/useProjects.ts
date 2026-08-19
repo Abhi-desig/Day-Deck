@@ -74,6 +74,11 @@ export const useProjects = create<ProjectsState>((set, get) => {
     homes: null,
 
     async load() {
+      // Already held, and every mutator below patches it. Deduping concurrent
+      // calls was only ever half the answer — a section switch unmounts and
+      // remounts this panel, so the list was re-read on every visit to a
+      // gesture whose whole job is to be instant.
+      if (get().ready) return
       // Mounting the section and jumping in from a day card can both land here
       // in the same tick; one fetch is enough.
       if (loadPromise) return loadPromise

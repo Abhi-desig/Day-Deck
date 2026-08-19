@@ -20,6 +20,7 @@ import { useProjects } from '../../store/useProjects'
 import { useStoryboards } from '../../store/useStoryboards'
 import { useCut } from '../../store/useCut'
 import { useStyles } from '../../store/useStyles'
+import { useCast } from '../../store/useCast'
 import { useTakes } from '../../store/useTakes'
 import { ApprovalWindow } from './ApprovalWindow'
 import { REVISE_EVENT, type ReviseDetail } from './nodes/SceneRow'
@@ -44,6 +45,7 @@ export function Storyboards() {
   const open = useStoryboards((s) => s.open)
   const addBoard = useStoryboards((s) => s.addBoard)
   const dismissError = useStoryboards((s) => s.dismissError)
+  const setFrames = useStoryboards((s) => s.setFrames)
 
   const projects = useProjects((s) => s.projects)
   const loadProjects = useProjects((s) => s.load)
@@ -53,6 +55,10 @@ export function Storyboards() {
   const loadPlaced = useStyles((s) => s.loadPlaced)
   const styleError = useStyles((s) => s.error)
   const dismissStyleError = useStyles((s) => s.dismissError)
+
+  const loadPlacedCast = useCast((s) => s.loadPlaced)
+  const castError = useCast((s) => s.error)
+  const dismissCastError = useCast((s) => s.dismissError)
 
   const [naming, setNaming] = useState(false)
   const [zoom, setZoom] = useState(1)
@@ -97,11 +103,27 @@ export function Storyboards() {
   // Placements belong to one board, so they follow the open board. Pending
   // offers belong to the board they were raised on and go with it.
   useEffect(() => {
-    if (activeId) void loadPlaced(activeId)
+    if (activeId) {
+      void loadPlaced(activeId)
+      void loadPlacedCast(activeId)
+    }
     setOfferStyleId(null)
     setOfferPrompts(false)
     setPromptProposal(null)
-  }, [activeId, loadPlaced])
+  }, [activeId, loadPlaced, loadPlacedCast])
+
+  /**
+   * Reference-pack progress, pushed on its own channel.
+   *
+   * Subscribed once for the section, like generation progress — but separately,
+   * because a pack is deliberately not the app's long-running-work indicator
+   * and sharing that channel would light the generation UI up for background
+   * work nobody is waiting on.
+   */
+  useEffect(
+    () => api.storyboards.onPackProgress(useCast.getState().applyProgress),
+    []
+  )
 
   // Generation progress is pushed, not polled. Subscribed once for the whole
   // section, because there is one job at a time across the whole app.
@@ -161,8 +183,10 @@ export function Storyboards() {
     if (!useCut.getState().cut) {
       await api.cut.move(activeId, 980, -40)
     }
-    await loadCut(activeId)
-  }, [activeId, loadCut])
+    // `refresh`, not `load`: this call has just created the very thing `load`
+    // would decide it already had.
+    await useCut.getState().refresh(activeId)
+  }, [activeId])
 
   // The cut follows the open board, like placements do.
   useEffect(() => {
@@ -204,11 +228,11 @@ export function Storyboards() {
     if (!activeId || applies.length === 0) return
     setApplying(true)
     try {
-      await api.storyboards.applyScenePlan(activeId, applies)
-      // Re-open rather than patching in place: applying can create, rewrite and
-      // delete in one go, and the board that comes back is the truth about all
-      // three at once.
-      await open(activeId)
+      // Applying can create, rewrite and delete in one go, and the frames that
+      // come back are the truth about all three — so they are taken straight
+      // rather than re-opening the board, which was six round trips to be told
+      // what this call had already returned.
+      setFrames(await api.storyboards.applyScenePlan(activeId, applies))
       setProposal(null)
       // Scenes are on the board; prompts are stage two, and stage two starts
       // by asking. Only when something survived — a plan applied as all
@@ -240,8 +264,7 @@ export function Storyboards() {
     if (!activeId || applies.length === 0) return
     setApplyingPrompts(true)
     try {
-      await api.storyboards.applyPromptPlan(activeId, applies)
-      await open(activeId)
+      setFrames(await api.storyboards.applyPromptPlan(activeId, applies))
       setPromptProposal(null)
     } catch (err) {
       setPlanError(errorMessage(err))
@@ -535,6 +558,7 @@ export function Storyboards() {
       {[
         { text: error, dismiss: dismissError },
         { text: styleError, dismiss: dismissStyleError },
+        { text: castError, dismiss: dismissCastError },
         { text: planError, dismiss: () => setPlanError(null) },
         { text: takeError, dismiss: dismissTakeError }
       ].map(

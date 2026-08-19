@@ -42,6 +42,17 @@ export function BriefNode({ data }: NodeProps<BriefNodeType>) {
         title="Drag a reference row here to make it film-wide"
         className="!size-2.5 !border-line !bg-surface"
       />
+      {/* The cast lands on top — a third kind of inbound wire, and a third
+          side, because two of them arriving at one point is where a graph
+          stops being readable. Not connectable by hand: a character is
+          attached by being placed, not by being wired. */}
+      <Handle
+        type="target"
+        id={HANDLE.briefCastIn}
+        position={Position.Top}
+        isConnectable={false}
+        className="!size-2.5 !border-amber/50 !bg-surface"
+      />
       <Handle
         type="source"
         id={HANDLE.briefOut}

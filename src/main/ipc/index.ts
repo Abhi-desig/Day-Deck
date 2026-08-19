@@ -11,6 +11,11 @@ import {
 import { isValidKey, todayKey } from '@shared/date'
 import { IPC } from '@shared/ipc-contract'
 import {
+  isProcessId,
+  type ProcessSpec,
+  type ResolvedProcess
+} from '@shared/processes'
+import {
   GOAL_COLORS,
   KEY_SLOTS,
   MAX_TAKES,
@@ -43,6 +48,7 @@ import type {
   NewStoryFrame,
   NewStoryList,
   NewStoryListItem,
+  NewStoryCastNode,
   NewStorySheet,
   NewStoryStyleNode,
   NewTag,
@@ -76,6 +82,7 @@ import * as slots from '../db/slots'
 import * as stickers from '../db/stickers'
 import * as cutDb from '../db/cut'
 import * as storyboards from '../db/storyboards'
+import * as dbCast from '../db/cast'
 import * as takesDb from '../db/takes'
 import * as styles from '../db/styles'
 import * as tags from '../db/tags'
@@ -84,6 +91,13 @@ import * as agent from '../services/agent'
 import { exportBackup, importBackup } from '../services/backup'
 import { bootstrap } from '../services/bootstrap'
 import { launchAtLoginEnabled, setLaunchAtLogin } from '../services/launch'
+import * as cast from '../services/cast'
+import {
+  listProcesses,
+  resetProcess,
+  setProcess
+} from '../services/processes'
+import { PROCESS_FIXED, PROCESS_SCHEMA } from '../services/ai'
 import * as curriculum from '../services/curriculum'
 import * as notify from '../services/notify'
 import * as storyboardPlan from '../services/storyboard'
@@ -675,6 +689,126 @@ export function registerIpc(): void {
     storyboards.deleteSheet(getDb(), id)
   })
 
+  /* ------------------------------------------------- locking a character */
+
+  ipcMain.handle(
+    IPC.sheetsProposePortrait,
+    (_e, sheetId: unknown, extra: unknown) => {
+      assertId(sheetId, 'character id')
+      if (extra !== undefined && typeof extra !== 'string') {
+        throw new Error('Portrait direction has to be text.')
+      }
+      if (typeof extra === 'string' && extra.length > MAX_SHEET_DESCRIPTION) {
+        throw new Error(
+          `Portrait direction has to be under ${MAX_SHEET_DESCRIPTION} characters.`
+        )
+      }
+      return cast.proposePortrait(getDb(), sheetId, (extra ?? '') as string)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.sheetsApprovePortrait,
+    (_e, sheetId: unknown, shotId: unknown) => {
+      assertId(sheetId, 'character id')
+      assertId(shotId, 'image id')
+      const db = getDb()
+      cast.approvePortrait(db, sheetId, shotId)
+      return storyboards.getSheet(db, sheetId)
+    }
+  )
+
+  /**
+   * Fire-and-forget on purpose.
+   *
+   * The pack is minutes of background work the user was told they would not
+   * have to watch, so awaiting it here would hold an IPC call open for the
+   * whole of it and turn "approve" into a button that hangs. Progress arrives
+   * on `castPackProgress`; failures are reported there too.
+   */
+  ipcMain.handle(IPC.sheetsBuildPack, (event, sheetId: unknown) => {
+    assertId(sheetId, 'character id')
+    void cast
+      .buildPack(getDb(), sheetId, (update) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC.castPackProgress, update)
+        }
+      })
+      .catch(() => {
+        /* buildPack reports on the channel; nothing left to say here */
+      })
+  })
+
+  ipcMain.handle(IPC.sheetsPackProgress, (_e, sheetId: unknown) => {
+    assertId(sheetId, 'character id')
+    return cast.packProgress(getDb(), sheetId)
+  })
+
+  ipcMain.handle(IPC.sheetsShots, (_e, sheetId: unknown) => {
+    assertId(sheetId, 'character id')
+    return dbCast.listShots(getDb(), sheetId)
+  })
+
+  ipcMain.handle(IPC.sheetsDiscardShot, (_e, shotId: unknown) => {
+    assertId(shotId, 'image id')
+    cast.discardShot(getDb(), shotId)
+  })
+
+  ipcMain.handle(IPC.sheetsUnlock, (_e, sheetId: unknown) => {
+    assertId(sheetId, 'character id')
+    const db = getDb()
+    cast.unlock(db, sheetId)
+    return storyboards.getSheet(db, sheetId)
+  })
+
+  ipcMain.handle(IPC.sheetsPlaced, (_e, boardId: unknown) => {
+    assertId(boardId, 'board id')
+    return dbCast.listCastNodes(getDb(), boardId)
+  })
+
+  ipcMain.handle(IPC.sheetsPlace, (_e, input: NewStoryCastNode) => {
+    assertId(input?.boardId, 'board id')
+    assertId(input?.sheetId, 'character id')
+    for (const axis of ['x', 'y'] as const) {
+      const value = input[axis]
+      if (value === undefined) continue
+      if (!Number.isFinite(value) || Math.abs(value) > MAX_CANVAS) {
+        throw new Error(`Character ${axis} is out of range.`)
+      }
+    }
+    // Refused rather than silently allowed: a described-only character on the
+    // canvas would draw a lock with no image behind it, which is the one way
+    // this feature can look like it is working while doing nothing.
+    const sheet = storyboards.getSheet(getDb(), input.sheetId)
+    if (sheet.status !== 'locked' || !sheet.portraitId) {
+      throw new Error(
+        'Approve a portrait for this character first. Until then there is no image to lock the board to — only words, which every prompt already carries.'
+      )
+    }
+    return dbCast.placeCast(getDb(), input)
+  })
+
+  ipcMain.handle(
+    IPC.sheetsMoveNode,
+    (_e, id: unknown, x: unknown, y: unknown) => {
+      assertId(id, 'character placement id')
+      for (const value of [x, y]) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          throw new Error('Character position has to be a number.')
+        }
+        if (Math.abs(value) > MAX_CANVAS) {
+          throw new Error('Character position is out of range.')
+        }
+      }
+      return dbCast.moveCastNode(getDb(), id, x as number, y as number)
+    }
+  )
+
+  ipcMain.handle(IPC.sheetsUnplace, (_e, id: unknown) => {
+    assertId(id, 'character placement id')
+    dbCast.removeCastNode(getDb(), id)
+  })
+
   ipcMain.handle(IPC.mediaPick, async () => {
     const result = await dialog.showOpenDialog({
       title: 'Add reference media',
@@ -1081,6 +1215,75 @@ export function registerIpc(): void {
       throw new Error('The rate has to be a number of calls per minute.')
     }
     return rateLimit.setRatePerMinute(getDb(), perMinute)
+  })
+
+  /* -------------------------------------------------- process prompts */
+
+  /**
+   * A process, as the panel needs it: the resolved spec, whether it has been
+   * edited, the schema it must answer in, and what about it is not editable.
+   *
+   * Assembled here rather than in `services/processes.ts` because the schema
+   * lives with the parser that depends on it — moving it into `shared/` to make
+   * this one line shorter would put the contract further from the code that
+   * enforces it.
+   */
+  const resolved = (spec: ProcessSpec, modified: boolean): ResolvedProcess => ({
+    ...spec,
+    modified,
+    schema: PROCESS_SCHEMA[spec.id]
+      ? JSON.stringify(PROCESS_SCHEMA[spec.id], null, 2)
+      : '',
+    fixed: PROCESS_FIXED[spec.id] ?? []
+  })
+
+  ipcMain.handle(IPC.settingsProcesses, () =>
+    listProcesses(getDb()).map(({ spec, modified }) => resolved(spec, modified))
+  )
+
+  ipcMain.handle(
+    IPC.settingsSetProcess,
+    (_e, id: unknown, override: unknown) => {
+      if (!isProcessId(id)) {
+        throw new Error(`Unknown process: ${String(id)}`)
+      }
+      if (!override || typeof override !== 'object') {
+        throw new Error('A process override has to be an object.')
+      }
+      const patch = override as {
+        role?: unknown
+        rules?: unknown
+        limits?: unknown
+      }
+      if (patch.role !== undefined && typeof patch.role !== 'string') {
+        throw new Error('A process role has to be text.')
+      }
+      if (patch.rules !== undefined && !Array.isArray(patch.rules)) {
+        throw new Error('Process rules have to be a list of lines.')
+      }
+      if (
+        patch.limits !== undefined &&
+        (patch.limits === null || typeof patch.limits !== 'object')
+      ) {
+        throw new Error('Process limits have to be an object of numbers.')
+      }
+      // Everything past this point — the blank-role fallback, the pinned rules,
+      // and every clamp — is `resolveProcess`'s job, and it runs on the way
+      // back out so the panel is shown what the app will actually use.
+      return resolved(
+        setProcess(getDb(), id, {
+          role: patch.role as string | undefined,
+          rules: patch.rules as string[] | undefined,
+          limits: patch.limits as Record<string, number> | undefined
+        }),
+        true
+      )
+    }
+  )
+
+  ipcMain.handle(IPC.settingsResetProcess, (_e, id: unknown) => {
+    if (!isProcessId(id)) throw new Error(`Unknown process: ${String(id)}`)
+    return resolved(resetProcess(getDb(), id), false)
   })
 
   ipcMain.handle(IPC.settingsGetPrefs, () => getUiPrefs(getDb()))

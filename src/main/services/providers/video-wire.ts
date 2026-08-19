@@ -1,5 +1,6 @@
 import type { AiModel } from '@shared/types'
 import type { CallContext } from './http'
+import type { ImageInput } from './image-wire'
 
 /**
  * What a video provider has to be able to do, in Day Deck's terms.
@@ -33,6 +34,22 @@ export interface VideoAdapter {
    * discover from a bill. The caller clamps to this instead.
    */
   readonly maxSamples: number
+  /**
+   * How many character reference images one submission accepts, 0 if none.
+   *
+   * The most consequential number on this interface, and the reason it is
+   * stated rather than assumed. The vendors genuinely differ — Veo 3.1's
+   * `referenceImages` takes up to three, Veo 3 takes none of them at all,
+   * OpenAI's `/videos` takes a starting frame that has to match the output
+   * dimensions exactly — and a reference sent where one is not accepted is
+   * **silently ignored**. The run succeeds. The bill is the same. The clip
+   * comes back with the wrong person in it and nothing anywhere reports an
+   * error, which is the worst possible way for this to fail.
+   *
+   * So the caller clamps to this, exactly as it already clamps `sampleCount` to
+   * `maxSamples`, and says out loud when the clamp bites.
+   */
+  readonly maxReferenceImages: number
   /** The models this provider will actually accept a generation on. */
   listModels(ctx: CallContext): Promise<AiModel[]>
   /** Start the work. Returns as soon as it is queued, not when it is done. */
@@ -52,6 +69,15 @@ export interface VideoRequest {
   sampleCount: number
   aspectRatio: string
   negativePrompt?: string
+  /**
+   * Approved portraits of the characters this board is locked to.
+   *
+   * Identity anchors, not starting frames: the clip is not meant to *open* on
+   * these images, it is meant to contain these people. Adapters that can only
+   * express a starting frame therefore report `maxReferenceImages: 0` rather
+   * than quietly repurposing this.
+   */
+  references?: ImageInput[]
 }
 
 /**

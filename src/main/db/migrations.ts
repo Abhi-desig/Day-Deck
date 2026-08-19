@@ -5,7 +5,7 @@
  * Kept as inline SQL rather than .sql files so the main-process bundle has no
  * runtime asset resolution to get wrong once packaged into an asar.
  */
-import { stylePackMigration } from './style-pack'
+import { stylePackMigration, styleCategoryMigration } from './style-pack'
 
 export const MIGRATIONS: readonly string[] = [
   /* ---------------------------------------------------------- v1: schema */
@@ -585,5 +585,77 @@ export const MIGRATIONS: readonly string[] = [
    * back every launch. Each insert skips a name the library already has, which
    * is what makes it safe to run against a library someone has been typing
    * their own styles into. */
-  stylePackMigration()
+  stylePackMigration(),
+
+  /* v15 — a character can be *fixed* rather than merely described, and the
+   * style library gets filed into families.
+   *
+   * Two features in one entry because they land in one release and a
+   * `user_version` is per release, not per feature. Nothing here rebuilds a
+   * table: every column is an ALTER with a default, so a v14 database with rows
+   * in it walks forward without touching a single existing value. */
+  `
+  -- How far this character has got towards being fixed. 'described' is what a
+  -- sheet has always been; 'proposed' means a portrait exists and none is
+  -- approved; 'locked' means one was, and it is the only state in which the
+  -- image is attached to a generation.
+  --
+  -- No CHECK, deliberately — projects.kind in v9 records why: SQLite cannot
+  -- alter a CHECK, so a fourth value later would mean rebuilding the table.
+  -- The IPC layer validates every other enum in this app and validates this.
+  ALTER TABLE storyboard_sheets ADD COLUMN status        TEXT NOT NULL DEFAULT 'described';
+  -- The words the portrait is generated from. Defaults to empty and falls back
+  -- to the description at read time, so nobody types their character twice.
+  ALTER TABLE storyboard_sheets ADD COLUMN source_prompt TEXT NOT NULL DEFAULT '';
+  ALTER TABLE storyboard_sheets ADD COLUMN portrait_id   TEXT;
+  ALTER TABLE storyboard_sheets ADD COLUMN locked_at     TEXT;
+
+  -- Every image generated for a character. Candidates are kept the way takes
+  -- are: a generation that cost money is not thrown away by the next click.
+  --
+  -- file_name is a basename and the id IS the name, so no row here carries a
+  -- path — there is nothing to sanitise because there is nothing to traverse.
+  CREATE TABLE storyboard_sheet_shots (
+    id         TEXT PRIMARY KEY,
+    sheet_id   TEXT NOT NULL REFERENCES storyboard_sheets(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL DEFAULT 'candidate',   -- 'candidate' | 'pack'
+    view       TEXT NOT NULL DEFAULT '',            -- one of PACK_VIEWS, '' for a candidate
+    file_name  TEXT NOT NULL,
+    model      TEXT NOT NULL DEFAULT '',
+    prompt     TEXT NOT NULL DEFAULT '',
+    poster     TEXT,
+    sort_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_sb_sheet_shots_sheet ON storyboard_sheet_shots(sheet_id);
+
+  -- One pack image per view per character. A second 'profile' is not a second
+  -- statement, it is a duplicate, and it would make "is the pack finished?"
+  -- unanswerable by counting — which is the whole reason the pack needs no job
+  -- row: the rows ARE the progress.
+  CREATE UNIQUE INDEX idx_sb_sheet_shots_view
+    ON storyboard_sheet_shots(sheet_id, view) WHERE kind = 'pack';
+
+  -- A character placed on one board's canvas. Mirrors storyboard_style_nodes
+  -- exactly, including the one-per-board UNIQUE: dropping the same character
+  -- twice is the same statement made twice, so the second drop moves the node.
+  CREATE TABLE storyboard_cast_nodes (
+    id         TEXT PRIMARY KEY,
+    board_id   TEXT NOT NULL REFERENCES storyboards(id)       ON DELETE CASCADE,
+    sheet_id   TEXT NOT NULL REFERENCES storyboard_sheets(id) ON DELETE CASCADE,
+    x          REAL NOT NULL DEFAULT 0,
+    y          REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_sb_cast_once ON storyboard_cast_nodes(board_id, sheet_id);
+  CREATE INDEX idx_sb_cast_board ON storyboard_cast_nodes(board_id);
+
+  -- Which family a look belongs to. A column rather than a table: there is one
+  -- category per style and nothing else hangs off a category, so a table would
+  -- be a join for a string. '' is uncategorised and gets its own trailing group
+  -- in the panel — not hidden, and not silently filed under the first family.
+  --
+  -- No CHECK here either, same lesson.
+  ALTER TABLE video_styles ADD COLUMN category TEXT NOT NULL DEFAULT '';
+  ` + styleCategoryMigration()
 ]

@@ -1,9 +1,12 @@
 import {
   PROVIDER_INFO,
+  imageProviders,
   isAiProvider,
   videoProviders,
   type AiModel,
   type AiProvider,
+  type AiProviderInfo,
+  type ImageWire,
   type KeySlot,
   type SlotConfig,
   type VideoWire
@@ -18,7 +21,10 @@ import { geminiWire } from './gemini'
 import { openaiWire } from './openai'
 import { soraVideo } from './sora'
 import { veoVideo } from './veo'
+import { geminiImage } from './gemini-image'
+import { openaiImage } from './openai-image'
 import type { VideoAdapter } from './video-wire'
+import type { ImageAdapter, ImageRequest, ImageResult } from './image-wire'
 
 /**
  * Which adapter speaks which dialect.
@@ -183,23 +189,41 @@ function resolveKey(db: Db, config: SlotConfig): string {
  * sensible guess (OpenRouter, a custom server) say so rather than inventing an
  * id that would 404.
  *
- * The video slot falls back to a *video* default, which is the whole reason
- * `defaultVideoModel` exists. It used to share `defaultModel` with every other
- * slot, so an install that had never opened Settings sent `gemini-3.5-flash` to
- * a video endpoint and got a 404 about a missing model — on a slot nobody had
- * configured, for a button that looked like it should just work.
+ * The video and image slots fall back to *their own* defaults, which is the
+ * whole reason `defaultVideoModel` and `defaultImageModel` exist. The video one
+ * used to share `defaultModel` with every other slot, so an install that had
+ * never opened Settings sent `gemini-3.5-flash` to a video endpoint and got a
+ * 404 about a missing model — on a slot nobody had configured, for a button
+ * that looked like it should just work.
  */
+
+/**
+ * Which field on the provider is a given slot's fallback.
+ *
+ * A lookup rather than a ternary because there are now two special cases, and
+ * two special cases in a conditional is the shape that grows a third one
+ * silently. A slot absent from this table falls back to `defaultModel`, which
+ * is right for every slot that asks a model to write words.
+ */
+const SLOT_DEFAULT_MODEL: Partial<Record<KeySlot, keyof AiProviderInfo>> = {
+  video: 'defaultVideoModel',
+  image: 'defaultImageModel'
+}
+
 export function modelFor(db: Db, slot: KeySlot): string {
   const config = slotConfig(db, slot)
   if (config.model) return config.model
 
   const info = PROVIDER_INFO[config.provider]
-  const fallback = slot === 'video' ? info.defaultVideoModel : info.defaultModel
-  if (fallback) return fallback
+  const field = SLOT_DEFAULT_MODEL[slot] ?? 'defaultModel'
+  const fallback = info[field]
+  if (typeof fallback === 'string' && fallback) return fallback
+
+  const kind = slot === 'video' ? 'video ' : slot === 'image' ? 'image ' : ''
 
   throw new AiError(
-    slot === 'video'
-      ? `No video model is chosen for the video slot, and ${info.label} has no default worth guessing. Pick one from the video slot's model list in Settings.`
+    kind
+      ? `No ${kind}model is chosen for the ${slot} slot, and ${info.label} has no default worth guessing. Pick one from the ${slot} slot's model list in Settings.`
       : `No model is chosen for the ${slot} slot. Pick one from the ${info.label} list in Settings.`,
     'config'
   )
@@ -257,6 +281,43 @@ export function videoAdapterFor(provider: AiProvider): VideoAdapter {
   )
 }
 
+/**
+ * Which adapter makes images, keyed by dialect.
+ *
+ * The third registry, and the reason the image slot is not hardcoded to Google:
+ * pointing it at a new provider is a `PROVIDER_INFO` entry when that provider
+ * speaks a dialect already here, and one new file beside `gemini-image.ts` when
+ * it speaks its own.
+ */
+const IMAGE_WIRE_ADAPTERS: Record<ImageWire, ImageAdapter> = {
+  'gemini-image': geminiImage,
+  'openai-image': openaiImage
+}
+
+/**
+ * The image adapter for a provider, or a refusal that names the alternatives.
+ *
+ * Exactly the shape `videoAdapterFor` has, and for exactly the reason: most of
+ * `PROVIDER_INFO` routes *language* models and has no image endpoint at all, so
+ * a key that writes prompts perfectly cannot draw a face however the slot is
+ * configured. Left to fail on the wire this arrives as a 404 about a missing
+ * model, which sends people looking for the wrong problem.
+ */
+export function imageAdapterFor(provider: AiProvider): ImageAdapter {
+  const wire = PROVIDER_INFO[provider].imageWire
+  if (wire) return IMAGE_WIRE_ADAPTERS[wire]
+
+  const able = imageProviders()
+    .map((p) => PROVIDER_INFO[p].label)
+    .join(', ')
+
+  throw new AiError(
+    `${PROVIDER_INFO[provider].label} does not generate images — it routes language models, so a key for it cannot produce a portrait however the slot is configured. ` +
+      `Set the image slot to one of: ${able || 'none configured'} — and give that slot its own key, since a key only works with the vendor it came from.`,
+    'config'
+  )
+}
+
 /* ------------------------------------------------------------- the calls */
 
 /**
@@ -286,6 +347,9 @@ export async function listModels(
   // to collect". Routed here rather than inside the adapter because it is a
   // property of the *slot*, and `WireAdapter` deliberately has no video in it.
   if (slot === 'video') return videoAdapterFor(config.provider).listModels(ctx)
+  // Same again for the third question. Three slots, three registries, one
+  // endpoint per provider that gets asked all three.
+  if (slot === 'image') return imageAdapterFor(config.provider).listModels(ctx)
 
   return adapterFor(config.provider).listModels(ctx)
 }
@@ -308,6 +372,32 @@ export async function generateText(
   return adapterFor(ctx.provider).generateText(ctx, req)
 }
 
+/**
+ * One image call, against whichever provider the image slot is set to.
+ *
+ * Clamps `count` to what the adapter says it can return, for the reason
+ * `maxSamples` already established: a count the provider ignores is a silent
+ * shortfall on something metered, and a bill is a bad place to discover it.
+ */
+export async function generateImage(
+  db: Db,
+  req: ImageRequest
+): Promise<ImageResult[]> {
+  const ctx = callContext(db, 'image')
+  const adapter = imageAdapterFor(ctx.provider)
+  return adapter.generate(ctx, {
+    ...req,
+    count: Math.max(1, Math.min(req.count, adapter.maxImages)),
+    references: req.references.slice(0, adapter.maxReferences)
+  })
+}
+
+/** How many references the image slot's provider will actually accept. */
+export function imageReferenceLimit(db: Db): number {
+  return imageAdapterFor(slotConfig(db, 'image').provider).maxReferences
+}
+
 export { AiError } from './http'
 export type { CallContext } from './http'
 export type { JsonRequest, TextRequest, WireAdapter } from './wire'
+export type { ImageAdapter, ImageInput, ImageRequest, ImageResult } from './image-wire'

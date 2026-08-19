@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
+  STYLE_CATEGORIES,
   STYLE_FIELDS,
   type StyleExtra,
   type VideoStyle,
@@ -9,6 +10,7 @@ import {
 import { cn } from '../../lib/cn'
 import { goalStyle } from '../../lib/goalColor'
 import { SPRING } from '../../lib/motion'
+import { groupStyles } from '../../lib/style-groups'
 import { useStyles } from '../../store/useStyles'
 import { Field } from './Field'
 import { STYLE_DRAG_TYPE } from './nodes/types'
@@ -28,6 +30,17 @@ export function StylePanel({ open }: { open: boolean }) {
   const styles = useStyles((s) => s.styles)
   const add = useStyles((s) => s.add)
   const [editing, setEditing] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  /**
+   * Which families are folded shut.
+   *
+   * Local component state rather than a preference, deliberately: a collapsed
+   * group is a reading position, not a setting, and it should not follow you
+   * into next week.
+   */
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  const groups = groupStyles(styles, filter)
 
   async function create(): Promise<void> {
     const style = await add({ name: 'New style' })
@@ -65,18 +78,78 @@ export function StylePanel({ open }: { open: boolean }) {
                 the light — kept once so every prompt on every board can say it.
               </p>
             ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {styles.map((style) => (
-                  <Chip
-                    key={style.id}
-                    style={style}
-                    editing={editing === style.id}
-                    onEdit={() =>
-                      setEditing(editing === style.id ? null : style.id)
-                    }
-                  />
-                ))}
-              </div>
+              <>
+                {/* Families alone still leave a wall of chips. Settings'
+                    ModelPicker learned this at a larger scale: a list you
+                    cannot type at is a scroll bar. */}
+                <input
+                  type="search"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder={`Filter ${styles.length} looks — name, lens, grade, stock…`}
+                  className="mb-2 w-full rounded-md border border-line-soft bg-well px-2.5 py-1 text-[11.5px] text-ink-dim outline-none placeholder:text-ink-faint/45 focus:border-line"
+                />
+
+                {groups.length === 0 ? (
+                  <p className="px-1 pb-1 text-[11.5px] text-ink-faint">
+                    Nothing matches “{filter.trim()}”.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {groups.map((group) => {
+                      // A filter that found something opens what it found —
+                      // typing three letters and being shown a folded heading
+                      // is the search failing.
+                      const shut =
+                        !filter.trim() && collapsed.has(group.id || '_none')
+                      return (
+                        <div key={group.id || '_none'}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCollapsed((prev) => {
+                                const next = new Set(prev)
+                                const key = group.id || '_none'
+                                if (next.has(key)) next.delete(key)
+                                else next.add(key)
+                                return next
+                              })
+                            }
+                            title={group.hint}
+                            className="flex w-full items-baseline gap-1.5 pb-1 text-left"
+                          >
+                            <span className="text-[9px] text-ink-faint">
+                              {shut ? '▸' : '▾'}
+                            </span>
+                            <span className="text-[10.5px] uppercase tracking-[0.14em] text-ink-faint">
+                              {group.label}
+                            </span>
+                            <span className="text-[10.5px] text-ink-faint/70">
+                              {group.styles.length}
+                            </span>
+                          </button>
+                          {!shut && (
+                            <div className="flex flex-wrap gap-1.5 pl-3">
+                              {group.styles.map((style) => (
+                                <Chip
+                                  key={style.id}
+                                  style={style}
+                                  editing={editing === style.id}
+                                  onEdit={() =>
+                                    setEditing(
+                                      editing === style.id ? null : style.id
+                                    )
+                                  }
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </>
             )}
 
             <AnimatePresence initial={false}>
@@ -207,6 +280,23 @@ function Editor({ style, onDone }: { style: VideoStyle; onDone(): void }) {
           onCommit={(name) => name.trim() && void patch(style.id, { name })}
           className="min-w-0 flex-1 text-[12.5px] text-ink"
         />
+        <select
+          value={style.category}
+          onChange={(e) =>
+            void patch(style.id, {
+              category: e.target.value as VideoStyle['category']
+            })
+          }
+          title="Which family this look is filed under"
+          className="shrink-0 rounded border border-line-soft bg-well px-1.5 py-0.5 text-[11px] text-ink-dim"
+        >
+          <option value="">Uncategorised</option>
+          {STYLE_CATEGORIES.map((category) => (
+            <option key={category.id} value={category.id}>
+              {category.label}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           onClick={() => void duplicate(style.id)}

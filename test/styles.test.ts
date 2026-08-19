@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import type { VideoStyle } from '../src/shared/types'
 import * as boards from '../src/main/db/storyboards'
 import * as styles from '../src/main/db/styles'
+import { groupStyles } from '../src/renderer/src/lib/style-groups'
 import { makeDb, type TestDb } from './helpers'
 
 let db: TestDb
@@ -174,5 +176,146 @@ describe('placing a style on a board', () => {
     expect(() =>
       styles.placeStyle(db, { boardId: board.id, styleId: 'no-such-style' })
     ).toThrow()
+  })
+})
+
+/**
+ * Filing the library into families.
+ *
+ * The grouping is a pure function outside the component precisely so it can be
+ * asserted here — logic of this kind inside JSX is invisible to a node-only
+ * suite, and a style filed under a family nobody declared simply stops being
+ * rendered with nothing to say so.
+ */
+describe('grouping styles into families', () => {
+  const style = (
+    over: Partial<VideoStyle> & Pick<VideoStyle, 'id' | 'name'>
+  ): VideoStyle => ({
+    videoStyle: '',
+    camera: '',
+    lens: '',
+    grade: '',
+    lighting: '',
+    filmStock: '',
+    aspect: '',
+    extras: [],
+    sourceText: '',
+    category: '',
+    color: 'amber',
+    sortIndex: 0,
+    createdAt: 'now',
+    ...over
+  })
+
+  it('orders groups by the list in code, not by what is in the rows', () => {
+    const groups = groupStyles([
+      style({ id: '1', name: 'Late', category: 'landscape' }),
+      style({ id: '2', name: 'Early', category: 'cinema' })
+    ])
+    // `cinema` comes first in STYLE_CATEGORIES, so it comes first here — which
+    // family reads first is a decision made once, in code.
+    expect(groups.map((g) => g.id)).toEqual(['cinema', 'landscape'])
+  })
+
+  it('gives uncategorised its own trailing group rather than hiding it', () => {
+    const groups = groupStyles([
+      style({ id: '1', name: 'Mine' }),
+      style({ id: '2', name: 'Scope', category: 'cinema' })
+    ])
+    expect(groups.map((g) => g.id)).toEqual(['cinema', ''])
+    expect(groups[1].label).toBe('Uncategorised')
+    expect(groups[1].styles.map((s) => s.name)).toEqual(['Mine'])
+  })
+
+  it('files a category it has never heard of as uncategorised, not nowhere', () => {
+    // From a newer build, or a hand-edited row. Dropping it would take the
+    // style out of the panel entirely with nothing to say so.
+    const groups = groupStyles([
+      style({ id: '1', name: 'Future', category: 'holograph' as never })
+    ])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].id).toBe('')
+    expect(groups[0].styles[0].name).toBe('Future')
+  })
+
+  it('drops empty groups instead of printing headings over nothing', () => {
+    expect(groupStyles([])).toEqual([])
+    expect(
+      groupStyles([style({ id: '1', name: 'Scope', category: 'cinema' })])
+    ).toHaveLength(1)
+  })
+
+  it('keeps the caller’s order inside a group', () => {
+    const groups = groupStyles([
+      style({ id: '1', name: 'First', category: 'cinema', sortIndex: 0 }),
+      style({ id: '2', name: 'Second', category: 'cinema', sortIndex: 1 })
+    ])
+    expect(groups[0].styles.map((s) => s.name)).toEqual(['First', 'Second'])
+  })
+
+  it('filters on what a look does, not only on what it is called', () => {
+    const library = [
+      style({ id: '1', name: 'SCOPE', category: 'cinema', lens: '40mm anamorphic' }),
+      style({ id: '2', name: 'FRONT CAMERA', category: 'documentary', grade: 'flat' })
+    ]
+    // People look for a look by its lens or its stock far more often than by
+    // the name somebody gave it.
+    expect(groupStyles(library, 'anamorphic')[0].styles.map((s) => s.name)).toEqual(
+      ['SCOPE']
+    )
+    expect(groupStyles(library, 'front')[0].styles.map((s) => s.name)).toEqual([
+      'FRONT CAMERA'
+    ])
+    expect(groupStyles(library, 'nothing here')).toEqual([])
+  })
+
+  it('ignores case and surrounding space in the filter', () => {
+    const library = [style({ id: '1', name: 'SCOPE', category: 'cinema' })]
+    expect(groupStyles(library, '  scOpE ')).toHaveLength(1)
+    expect(groupStyles(library, '')).toHaveLength(1)
+  })
+})
+
+
+/**
+ * The category column, read the way the colour beside it already is.
+ */
+describe('a style’s category', () => {
+  it('defaults to uncategorised and round-trips a real one', () => {
+    const plain = styles.createStyle(db, { name: 'Plain' })
+    expect(plain.category).toBe('')
+
+    const filed = styles.updateStyle(db, plain.id, { category: 'cinema' })
+    expect(filed.category).toBe('cinema')
+    expect(styles.getStyle(db, plain.id).category).toBe('cinema')
+  })
+
+  it('reads a value it does not recognise back as uncategorised', () => {
+    // No CHECK on the column by design, so a row from a newer build — or a
+    // hand-edited one — must degrade rather than crash a board load.
+    const style = styles.createStyle(db, { name: 'Odd' })
+    db.prepare(`UPDATE video_styles SET category = 'holograph' WHERE id = ?`).run(
+      style.id
+    )
+    expect(styles.getStyle(db, style.id).category).toBe('')
+  })
+
+  it('refuses to store a category it does not know at create time', () => {
+    const style = styles.createStyle(db, {
+      name: 'Invented',
+      category: 'holograph' as never
+    })
+    expect(style.category).toBe('')
+  })
+
+  it('keeps sort order within the library untouched by filing', () => {
+    const a = styles.createStyle(db, { name: 'A' })
+    const b = styles.createStyle(db, { name: 'B' })
+    styles.updateStyle(db, b.id, { category: 'cinema' })
+    // Among the two just added — the library already ships eighteen.
+    const mine = styles
+      .listStyles(db)
+      .filter((s) => s.id === a.id || s.id === b.id)
+    expect(mine.map((s) => s.id)).toEqual([a.id, b.id])
   })
 })

@@ -24,6 +24,7 @@ const {
 const plan = await import('../src/main/services/storyboard')
 const styles = await import('../src/main/db/styles')
 const { configureSlot, makeDb } = await import('./helpers')
+const { PROCESS_DEFAULTS } = await import('../src/shared/processes')
 
 /**
  * The sorter's one job is moving the user's words into boxes without adding
@@ -41,7 +42,7 @@ afterEach(() => {
 
 describe('the sort prompt', () => {
   it('carries the description verbatim and forbids invention', () => {
-    const prompt = buildStyleSortPrompt(TEXT)
+    const prompt = buildStyleSortPrompt(PROCESS_DEFAULTS['style.sort'], TEXT)
 
     expect(prompt).toContain(TEXT)
     expect(prompt).toMatch(/Use only words and phrases that appear/)

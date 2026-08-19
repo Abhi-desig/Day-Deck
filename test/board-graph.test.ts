@@ -7,6 +7,8 @@ import type {
   StoryList,
   StoryListItem,
   Storyboard,
+  StoryCastNode,
+  StorySheet,
   StoryStyleNode,
   VideoStyle
 } from '../src/shared/types'
@@ -19,7 +21,9 @@ import {
 } from '../src/renderer/src/lib/board-graph'
 import {
   GROUP_MAX_H,
-  GROUP_MIN_H
+  GROUP_MIN_H,
+  HANDLE,
+  nodeId
 } from '../src/renderer/src/sections/Storyboards/nodes/types'
 
 /**
@@ -107,6 +111,7 @@ const style: VideoStyle = {
   aspect: '2.39:1',
   extras: [],
   sourceText: '',
+  category: '',
   color: 'violet',
   sortIndex: 0,
   createdAt: '2026-08-13T00:00:00Z'
@@ -130,6 +135,8 @@ const graph = (over: Partial<BoardGraphInput> = {}): BoardGraphInput => ({
   briefRefs: [],
   placedStyles: [],
   styleLibrary: [],
+  placedCast: [],
+  sheets: [],
   // The free canvas, which is what most of these cases are about. The container
   // has its own describe block below.
   sceneLayout: 'canvas',
@@ -139,6 +146,29 @@ const graph = (over: Partial<BoardGraphInput> = {}): BoardGraphInput => ({
   takes: [],
   ...over
 })
+
+const sheet: StorySheet = {
+  id: 's1',
+  boardId: board.id,
+  kind: 'character',
+  name: 'Maya',
+  description: '24, shoulder-length black hair, grey hoodie',
+  status: 'locked',
+  sourcePrompt: '24, shoulder-length black hair, grey hoodie',
+  portraitId: 'shot-1',
+  lockedAt: '2026-08-13T00:00:00Z',
+  sortIndex: 0,
+  createdAt: '2026-08-13T00:00:00Z'
+}
+
+const castPlacement: StoryCastNode = {
+  id: 'cp1',
+  boardId: board.id,
+  sheetId: sheet.id,
+  x: 120,
+  y: -320,
+  createdAt: '2026-08-13T00:00:00Z'
+}
 
 const storyCut: StoryCut = {
   id: 'c1',
@@ -457,5 +487,55 @@ describe('the timeline node', () => {
     )
     expect(wire?.deletable).toBe(false)
     expect(wire?.selectable).toBe(false)
+  })
+})
+
+
+/**
+ * A placed character is the second thing that attaches itself to the brief, and
+ * it must not land where the style lands. The wire is derived from the
+ * placement for the same reason the style's is: there is one brief per board,
+ * so a stored edge could only ever agree with the placement or be wrong.
+ */
+describe('a placed character', () => {
+  const input = graph({ placedCast: [castPlacement], sheets: [sheet] })
+
+  it('is drawn at its stored position, carrying the sheet', () => {
+    const node = buildBoardNodes(input).find((n) => n.type === 'cast')
+    expect(node).toBeDefined()
+    expect(node?.id).toBe(nodeId.cast(castPlacement.id))
+    expect(node?.position).toEqual({ x: 120, y: -320 })
+    expect((node?.data as { sheet: StorySheet }).sheet.id).toBe(sheet.id)
+  })
+
+  it('is not drawn at all when its sheet has not loaded', () => {
+    const nodes = buildBoardNodes(graph({ placedCast: [castPlacement] }))
+    expect(nodes.some((n) => n.type === 'cast')).toBe(false)
+  })
+
+  it('wires itself to the brief on its own handle, not the style handle', () => {
+    const edge = buildBoardEdges(input).find((e) => e.id === `cast:${castPlacement.id}`)
+    expect(edge).toBeDefined()
+    expect(edge?.source).toBe(nodeId.cast(castPlacement.id))
+    expect(edge?.target).toBe(nodeId.brief(board.id))
+    expect(edge?.targetHandle).toBe(HANDLE.briefCastIn)
+    // A brief already takes two kinds of inbound wire; a third arriving on one
+    // of their handles is where the graph stops being readable.
+    expect(edge?.targetHandle).not.toBe(HANDLE.briefStyleIn)
+    expect(edge?.targetHandle).not.toBe(HANDLE.briefRefIn)
+  })
+
+  it('draws a wire that cannot be deleted or selected by hand', () => {
+    const edge = buildBoardEdges(input).find((e) => e.id === `cast:${castPlacement.id}`)
+    expect(edge?.deletable).toBe(false)
+    expect(edge?.selectable).toBe(false)
+  })
+
+  it('draws one wire per placed character and none for an unplaced one', () => {
+    expect(
+      buildBoardEdges(graph({ sheets: [sheet] })).filter((e) =>
+        e.id.startsWith('cast:')
+      )
+    ).toHaveLength(0)
   })
 })

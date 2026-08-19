@@ -14,6 +14,8 @@ import {
 import { killAll as killAllTerminals } from './services/pty'
 import { startReminders, type Reminders } from './services/reminders'
 import { sweepOrphanedTakes } from './services/takes'
+import { sweepOrphanedShots } from './services/portraits'
+import { resumePacks } from './services/cast'
 import { resumeJobs } from './services/video'
 
 let mainWindow: BrowserWindow | null = null
@@ -211,6 +213,9 @@ if (!app.requestSingleInstanceLock()) {
       // it `running` would block every future generation on the in-flight check.
       failOrphanedJobs(db)
       sweepOrphanedTakes(db)
+      // The same trap, one directory over: a deleted board cascades its
+      // character images away as rows and leaves the PNGs behind.
+      sweepOrphanedShots(db)
 
       const send = (update: VideoJobProgress): void => {
         for (const win of BrowserWindow.getAllWindows()) {
@@ -221,6 +226,20 @@ if (!app.requestSingleInstanceLock()) {
       }
       void resumeJobs(db, send).catch(() => {
         /* recorded on the job row; nothing more to do here */
+      })
+
+      // Finish any reference pack a quit interrupted. Its own channel, because
+      // an invisible background pack is deliberately not the app's
+      // long-running-work indicator — putting it on `boardsJobProgress` would
+      // light up the generation UI for work nobody is waiting on.
+      void resumePacks(db, (update) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.webContents.isDestroyed()) {
+            win.webContents.send(IPC.castPackProgress, update)
+          }
+        }
+      }).catch(() => {
+        /* reported on the channel; nothing more to do here */
       })
     } catch {
       /* recovery is best-effort and must never stop a launch */

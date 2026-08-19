@@ -10,10 +10,12 @@ import type {
   StoryListItem
 } from '@shared/types'
 import { FRAME_H, FRAME_W } from '@shared/types'
+import { PROCESS_DEFAULTS } from '@shared/processes'
 import type { Db } from '../db'
 import { replaceSegments } from '../db/cut'
 import * as boards from '../db/storyboards'
 import * as styles from '../db/styles'
+import { resolveProcess } from './processes'
 import {
   planCut,
   planPrompts as askForPrompts,
@@ -85,11 +87,23 @@ const describeItem = (item: StoryListItem): string =>
  * about them would have the model invent the description — which is the exact
  * inconsistency the cast exists to prevent.
  */
-const castOf = (db: Db, boardId: string): SheetLine[] =>
-  boards
+const castOf = (db: Db, boardId: string): SheetLine[] => {
+  // Placed *and* locked is what "their portrait rides along with the request"
+  // means; the same pair of conditions services/video.ts asks before it
+  // attaches the bytes, so the prompt and the request cannot disagree.
+  const locked = new Set(
+    boards.listLockedCastOnBoard(db, boardId).map((s) => s.id)
+  )
+
+  return boards
     .listSheets(db, boardId)
     .filter((s) => s.name.trim() && s.description.trim())
-    .map((s) => ({ name: s.name, description: s.description }))
+    .map((s) => ({
+      name: s.name,
+      description: s.description,
+      locked: locked.has(s.id)
+    }))
+}
 
 export async function propose(
   db: Db,
@@ -247,7 +261,18 @@ export function apply(
  * The whole board still goes into every call as context — batching changes how
  * many prompts come back, never how much the model has read.
  */
-const PROMPT_BATCH = 4
+const PROMPT_BATCH = PROCESS_DEFAULTS['board.prompts'].limits.batch ?? 4
+
+/**
+ * The batch this run will actually use.
+ *
+ * Read from the resolved process rather than the constant so the number is
+ * editable in Settings alongside the ceiling it has to stay in step with —
+ * they are one decision, and a batch raised without raising the output ceiling
+ * is a run that truncates. `resolveProcess` clamps both.
+ */
+const promptBatch = (db: Db): number =>
+  resolveProcess(db, 'board.prompts').limits.batch ?? PROMPT_BATCH
 
 /**
  * Stage two: write a prompt for every scene on the board.
@@ -302,10 +327,10 @@ export async function proposePrompts(
   const characters = castOf(db, boardId)
   const prompts: PromptPlanProposal['prompts'] = []
 
-  for (let start = 0; start < scenes.length; start += PROMPT_BATCH) {
-    const write = scenes
-      .slice(start, start + PROMPT_BATCH)
-      .map((s) => s.number)
+  const batchSize = promptBatch(db)
+
+  for (let start = 0; start < scenes.length; start += batchSize) {
+    const write = scenes.slice(start, start + batchSize).map((s) => s.number)
 
     const batch = await askForPrompts({
       db,

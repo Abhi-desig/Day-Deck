@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type WheelEvent as ReactWheelEvent
+} from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -7,6 +13,7 @@ import {
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useStoreApi,
   type Connection,
   type Edge,
   type IsValidConnection,
@@ -33,16 +40,20 @@ import { useCut } from '../../store/useCut'
 import { usePrefs } from '../../store/usePrefs'
 import { useStoryboards } from '../../store/useStoryboards'
 import { useStyles } from '../../store/useStyles'
+import { useCast } from '../../store/useCast'
 import { useTakes } from '../../store/useTakes'
+import { useShallow } from 'zustand/react/shallow'
 import { BriefNode } from './nodes/BriefNode'
 import { ListNode, LIST_MIN_H, LIST_MIN_W } from './nodes/ListNode'
 import { SceneGroupNode } from './nodes/SceneGroupNode'
 import { SceneNode } from './nodes/SceneNode'
 import { StyleNode, STYLE_W } from './nodes/StyleNode'
+import { CastNode, CAST_W } from './nodes/CastNode'
 import { TimelineNode } from './nodes/TimelineNode'
 import {
   HANDLE,
   STYLE_DRAG_TYPE,
+  CAST_DRAG_TYPE,
   entityId,
   nodeId,
   nodeKind,
@@ -73,6 +84,7 @@ const NODE_TYPES = {
   list: ListNode,
   scene: SceneNode,
   style: StyleNode,
+  cast: CastNode,
   timeline: TimelineNode
 }
 
@@ -146,9 +158,27 @@ function Graph({
   const moveStyle = useStyles((s) => s.move)
   const unplaceStyle = useStyles((s) => s.unplace)
 
+  // The cast itself stays in the board store — a character is part of the
+  // board. What lives in `useCast` is everything that ticks on its own.
+  const sheets = useStoryboards((s) => s.sheets)
+
+  const placedCast = useCast((s) => s.placed)
+  const placeCast = useCast((s) => s.place)
+  const moveCast = useCast((s) => s.move)
+  const unplaceCast = useCast((s) => s.unplace)
+
   const sceneLayout = usePrefs((s) => s.sceneLayout)
   const cut = useCut((s) => s.cut)
-  const takesByFrame = useTakes((s) => s.byFrame)
+  /**
+   * Shallow, and it matters more here than it looks.
+   *
+   * A plain selector hands back `byFrame` by identity, and every generation
+   * progress tick replaces that object — which rebuilt the whole board graph,
+   * which rebuilt every node's `data`, which React Flow reads as *every node
+   * changed*. Comparing one level down means a tick that did not actually
+   * change a scene's takes stops the cascade at the selector.
+   */
+  const takesByFrame = useTakes(useShallow((s) => s.byFrame))
 
   // The timeline draws its clips from every take on the board. Flattened here
   // rather than in the node so the pure builder still receives plain data.
@@ -158,6 +188,7 @@ function Graph({
   )
 
   const flow = useReactFlow<BoardNode, Edge>()
+  const store = useStoreApi()
 
   /* ------------------------------------------------- store -> graph */
 
@@ -175,6 +206,8 @@ function Graph({
         briefRefs,
         placedStyles,
         styleLibrary,
+        placedCast,
+        sheets,
         sceneLayout,
         cut,
         takes
@@ -188,6 +221,8 @@ function Graph({
       briefRefs,
       placedStyles,
       styleLibrary,
+      placedCast,
+      sheets,
       sceneLayout,
       cut,
       takes
@@ -203,10 +238,21 @@ function Graph({
         refs,
         briefRefs,
         placedStyles,
+        placedCast,
         sceneLayout,
         cut
       }),
-    [board, frames, items, refs, briefRefs, placedStyles, sceneLayout, cut]
+    [
+      board,
+      frames,
+      items,
+      refs,
+      briefRefs,
+      placedStyles,
+      placedCast,
+      sceneLayout,
+      cut
+    ]
   )
 
   const [nodes, setNodes, onNodesChange] = useNodesState<BoardNode>(derivedNodes)
@@ -249,10 +295,11 @@ function Graph({
       if (node.type === 'scene') void placeFrame(id, rect)
       if (node.type === 'list') void placeList(id, rect)
       if (node.type === 'style') void moveStyle(id, rect.x, rect.y)
+      if (node.type === 'cast') void moveCast(id, rect.x, rect.y)
       // The timeline is the one node whose position the cut table stores.
       if (node.type === 'timeline') void api.cut.move(id, rect.x, rect.y)
     },
-    [placeFrame, placeList, moveStyle]
+    [placeFrame, placeList, moveStyle, moveCast]
   )
 
   /**
@@ -303,6 +350,73 @@ function Graph({
     [connectRef, connectBriefRef]
   )
 
+  /**
+   * A wire you have started dragging has to be abandonable.
+   *
+   * Without this the only exits are dropping it somewhere valid or deleting a
+   * node to get rid of it, and the second one is destructive for what should be
+   * a change of mind. `cancelConnection` clears the in-flight connection only —
+   * `onConnect` never fires, so no edge is created, and no node or existing wire
+   * is touched.
+   *
+   * Escape is already bound to closing panels app-wide, so this listens in the
+   * capture phase and stops the event: while a wire is in the air Escape means
+   * "drop the wire" and nothing else. With no drag in progress it is not ours
+   * and falls through to the panel handlers untouched.
+   */
+  const connecting = useRef(false)
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !connecting.current) return
+      event.preventDefault()
+      event.stopPropagation()
+      store.getState().cancelConnection()
+      connecting.current = false
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [store])
+
+  /**
+   * Zoom when the cursor is over a node.
+   *
+   * React Flow drops any wheel event whose target is inside `.nowheel`, and
+   * every scrolling surface on this board carries that class — the scene
+   * container's body, a list's body, the timeline strip, every textarea. They
+   * have to: without it, scrolling a list of twelve scenes pans the canvas
+   * instead. But the class suppresses *zoom* as well as *pan*, and only pan
+   * needed suppressing, so pinching over a node did nothing at all.
+   *
+   * So the zoom gesture is taken back here, in the capture phase — ahead of the
+   * pane's own listener — and only in the case React Flow refuses. A plain
+   * wheel is left alone, which is what keeps those bodies scrolling.
+   */
+  const onWheelCapture = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      // A trackpad pinch arrives as a wheel event with ctrlKey set.
+      if (!event.ctrlKey && !event.metaKey) return
+      if (!(event.target as HTMLElement).closest?.('.nowheel')) return
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      const { x, y, zoom } = flow.getViewport()
+      const next = clampZoom(zoom * Math.exp(-event.deltaY / 100))
+      if (next === zoom) return
+
+      // Anchor on the pointer: the world point under the cursor stays under it.
+      const rect = event.currentTarget.getBoundingClientRect()
+      const px = event.clientX - rect.left
+      const py = event.clientY - rect.top
+      const k = next / zoom
+      void flow.setViewport({ x: px - (px - x) * k, y: py - (py - y) * k, zoom: next })
+      // setViewport is not user movement, so onMove does not fire for it.
+      onZoom(next)
+    },
+    [flow, onZoom]
+  )
+
   const onEdgesDelete = useCallback(
     (deleted: Edge[]) => {
       for (const edge of deleted) {
@@ -326,9 +440,12 @@ function Graph({
         if (node.type === 'list') void removeList(entityId(node.id))
         // Deleting the node takes the style off this board. The library keeps it.
         if (node.type === 'style') void unplaceStyle(entityId(node.id))
+        // Same rule for a character: the placement goes, the person stays in
+        // the cast and their portrait stays approved.
+        if (node.type === 'cast') void unplaceCast(entityId(node.id))
       }
     },
-    [removeFrame, removeList, unplaceStyle]
+    [removeFrame, removeList, unplaceStyle, unplaceCast]
   )
 
   /**
@@ -449,7 +566,14 @@ function Graph({
       onNodesDelete={onNodesDelete}
       onEdgesDelete={onEdgesDelete}
       onConnect={onConnect}
+      onConnectStart={() => {
+        connecting.current = true
+      }}
+      onConnectEnd={() => {
+        connecting.current = false
+      }}
       isValidConnection={isValidConnection}
+      onWheelCapture={onWheelCapture}
       onMove={(_e, viewport) => onZoom(viewport.zoom)}
       onNodeDoubleClick={(event, node) => {
         if (node.type === 'scene') onFocusScene(entityId(node.id))
@@ -467,7 +591,13 @@ function Graph({
       // land here: a style chip from the panel, and files from the Finder.
       onDragOver={(event) => {
         const types = event.dataTransfer.types
-        if (!types.includes(STYLE_DRAG_TYPE) && !types.includes('Files')) return
+        if (
+          !types.includes(STYLE_DRAG_TYPE) &&
+          !types.includes(CAST_DRAG_TYPE) &&
+          !types.includes('Files')
+        ) {
+          return
+        }
         event.preventDefault()
         event.dataTransfer.dropEffect = 'copy'
       }}
@@ -489,6 +619,18 @@ function Graph({
             // The offer follows a successful drop, not the drag — a drop that
             // failed has nothing to plan from.
             if (placed) onStyleDropped(styleId)
+          })
+          return
+        }
+
+        const sheetId = event.dataTransfer.getData(CAST_DRAG_TYPE)
+        if (sheetId) {
+          event.preventDefault()
+          void placeCast({
+            boardId: board.id,
+            sheetId,
+            x: Math.round(at.x - CAST_W / 2),
+            y: Math.round(at.y - 40)
           })
           return
         }
