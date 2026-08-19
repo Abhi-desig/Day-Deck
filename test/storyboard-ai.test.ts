@@ -132,7 +132,7 @@ describe('the scene planning prompt', () => {
     // one over another.
     expect(prompt).toMatch(/duration_sec must be exactly one of: 4, 6, 8, 10/)
     expect(prompt).toMatch(/4s: a single beat/)
-    expect(prompt).toMatch(/10s: a developing action/)
+    expect(prompt).toMatch(/10s: the default — a developing action/)
   })
 
   it('gives every supported duration its own guidance', () => {
@@ -412,7 +412,7 @@ describe('the prompt writing prompt', () => {
     // A prompt saying "as established" is worthless the moment it leaves the
     // app, and leaving is the entire purpose of a prompt.
     expect(buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)).toMatch(
-      /never write "as established"/i
+      /never "as established"/i
     )
   })
 
@@ -469,7 +469,7 @@ describe('the prompt writing prompt', () => {
 
   it('fixes the order a prompt states things in', () => {
     expect(buildPromptWriterPrompt(PROCESS_DEFAULTS['board.prompts'], PROMPT_ARGS)).toMatch(
-      /subject, action, camera, lens, lighting, grade, film stock, aspect/
+      /subject, action, camera move, lens, lighting, environmental motion, grade, film stock, aspect/
     )
   })
 })

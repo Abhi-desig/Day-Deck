@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type WheelEvent as ReactWheelEvent
+} from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -7,6 +13,7 @@ import {
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useStoreApi,
   type Connection,
   type Edge,
   type IsValidConnection,
@@ -181,6 +188,7 @@ function Graph({
   )
 
   const flow = useReactFlow<BoardNode, Edge>()
+  const store = useStoreApi()
 
   /* ------------------------------------------------- store -> graph */
 
@@ -342,6 +350,73 @@ function Graph({
     [connectRef, connectBriefRef]
   )
 
+  /**
+   * A wire you have started dragging has to be abandonable.
+   *
+   * Without this the only exits are dropping it somewhere valid or deleting a
+   * node to get rid of it, and the second one is destructive for what should be
+   * a change of mind. `cancelConnection` clears the in-flight connection only —
+   * `onConnect` never fires, so no edge is created, and no node or existing wire
+   * is touched.
+   *
+   * Escape is already bound to closing panels app-wide, so this listens in the
+   * capture phase and stops the event: while a wire is in the air Escape means
+   * "drop the wire" and nothing else. With no drag in progress it is not ours
+   * and falls through to the panel handlers untouched.
+   */
+  const connecting = useRef(false)
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !connecting.current) return
+      event.preventDefault()
+      event.stopPropagation()
+      store.getState().cancelConnection()
+      connecting.current = false
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [store])
+
+  /**
+   * Zoom when the cursor is over a node.
+   *
+   * React Flow drops any wheel event whose target is inside `.nowheel`, and
+   * every scrolling surface on this board carries that class — the scene
+   * container's body, a list's body, the timeline strip, every textarea. They
+   * have to: without it, scrolling a list of twelve scenes pans the canvas
+   * instead. But the class suppresses *zoom* as well as *pan*, and only pan
+   * needed suppressing, so pinching over a node did nothing at all.
+   *
+   * So the zoom gesture is taken back here, in the capture phase — ahead of the
+   * pane's own listener — and only in the case React Flow refuses. A plain
+   * wheel is left alone, which is what keeps those bodies scrolling.
+   */
+  const onWheelCapture = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      // A trackpad pinch arrives as a wheel event with ctrlKey set.
+      if (!event.ctrlKey && !event.metaKey) return
+      if (!(event.target as HTMLElement).closest?.('.nowheel')) return
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      const { x, y, zoom } = flow.getViewport()
+      const next = clampZoom(zoom * Math.exp(-event.deltaY / 100))
+      if (next === zoom) return
+
+      // Anchor on the pointer: the world point under the cursor stays under it.
+      const rect = event.currentTarget.getBoundingClientRect()
+      const px = event.clientX - rect.left
+      const py = event.clientY - rect.top
+      const k = next / zoom
+      void flow.setViewport({ x: px - (px - x) * k, y: py - (py - y) * k, zoom: next })
+      // setViewport is not user movement, so onMove does not fire for it.
+      onZoom(next)
+    },
+    [flow, onZoom]
+  )
+
   const onEdgesDelete = useCallback(
     (deleted: Edge[]) => {
       for (const edge of deleted) {
@@ -491,7 +566,14 @@ function Graph({
       onNodesDelete={onNodesDelete}
       onEdgesDelete={onEdgesDelete}
       onConnect={onConnect}
+      onConnectStart={() => {
+        connecting.current = true
+      }}
+      onConnectEnd={() => {
+        connecting.current = false
+      }}
       isValidConnection={isValidConnection}
+      onWheelCapture={onWheelCapture}
       onMove={(_e, viewport) => onZoom(viewport.zoom)}
       onNodeDoubleClick={(event, node) => {
         if (node.type === 'scene') onFocusScene(entityId(node.id))

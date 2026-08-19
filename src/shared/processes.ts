@@ -257,26 +257,35 @@ The DAY CONTEXT you are given is the complete set of facts you may use: the day'
     label: 'Plan scenes',
     where: 'Storyboards → Plan scenes',
     slot: 'scenes',
-    role: 'You are a director breaking a creative brief into individual shots for an AI video generator.',
+    role: 'You are a cinematographer breaking a creative brief into the fewest continuous shots that can tell it. Every cut must earn itself: a shot that can carry the next beat should carry it.',
     rules: [
       r(
         'duration_sec must be exactly one of: 4, 6, 8, 10. Nothing else is renderable.',
         true
       ),
-      r('Choose per scene by what the shot needs:'),
-      r('  - 4s: a single beat — a look, a cut-in, a reveal, one gesture'),
-      r('  - 6s: one complete small action, or a held moment with movement in it'),
+      r('Default to 10. Shorten only when the shot genuinely has nothing left to do:'),
       r(
-        '  - 8s: an action carried by a camera move, or two beats that belong in one shot'
+        '  - 10s: the default — a developing action, a full camera move, or two beats held in one frame'
       ),
-      r('  - 10s: a developing action, a long move, or a shot that has to breathe'),
+      r(
+        '  - 8s: an action carried by a camera move, or one beat with a clear settle after it'
+      ),
+      r('  - 6s: one complete small action with no room left after it'),
+      r('  - 4s: a single beat — a look, a cut-in, a reveal, one gesture'),
+      r(
+        'Use the fewest scenes that cover the brief. Before adding one, ask whether the previous shot could hold the action with a camera move or a reframe instead. If it can, extend it.'
+      ),
+      r(
+        'Cut only when the location, the time, the subject or the framing must change. Do not cut for variety, emphasis or pacing.'
+      ),
       r('A scene is one continuous shot. No cuts inside a scene.'),
       r('title is a short shot name, 2-5 words, no numbering.'),
       r(
-        'description says what happens in this scene: subject, action, camera move if any. One or two sentences, written for the person reading the board.'
+        'description says what happens: subject, action, camera move if any, and where the shot starts and where it ends. One or two sentences.'
       ),
-      r('Order the scenes as they will be cut together.'),
-      r('Cover the whole brief. Use as many scenes as it genuinely needs and no more.'),
+      r(
+        'Order the scenes as they will be cut together, and hand each one off to the next — end where the following shot can begin.'
+      ),
       r('Do not write generation prompts. That is a later, separate step.')
     ],
     limits: { timeoutMs: 180_000, output: 8_192, minOutput: 2_048, thinking: 1_024 }
@@ -288,20 +297,37 @@ The DAY CONTEXT you are given is the complete set of facts you may use: the day'
     label: 'Write prompts',
     where: 'Storyboards → Write prompts',
     slot: 'prompts',
-    role: 'You are a director writing generation prompts, one per shot, for an AI video generator.',
+    role: 'You are a cinematographer writing one generation prompt per shot for an AI video model. The prompt is everything the model gets: it has not seen the other shots and it cannot read this board.',
     rules: [
       r(
-        'Every prompt must stand alone. Describe the look in the prompt itself; never write "as established", "same style", or "continuing from the previous shot".'
+        'Every prompt stands alone. Never "as established", "same style" or "continuing from the previous shot" — restate the look and the people in full.'
       ),
       r(
-        'State it in this order, every time: subject, action, camera, lens, lighting, grade, film stock, aspect. A generator reads the front of a prompt hardest, so what is in the shot goes first and how it was finished goes last.'
-      ),
-      r('A prompt describes one continuous shot. No cuts inside a scene.'),
-      r(
-        'Keep the look wording identical across prompts. Consistency across shots is the whole job.'
+        'One order, every time: subject, action, camera move, lens, lighting, environmental motion, grade, film stock, aspect. A generator reads the front of a prompt hardest, so what is in frame goes first and how it was finished goes last.'
       ),
       r(
-        'Match the amount of action to the length in brackets. A 4s shot is one beat and its prompt should describe one thing happening; a 10s shot can carry a developing action or a camera move. A prompt with three actions in it will not fit a short scene.'
+        'Name the camera move, its speed, and where it starts and ends — static, slow push, handheld follow, pan, tilt, dolly. A move with no end point generates as drift.'
+      ),
+      r(
+        'Give the frame depth: what sits in the foreground, where the subject falls, what drops off behind. State focus behaviour only when it changes — a rack, a follow focus.'
+      ),
+      r(
+        'Describe the motion the shot needs and nothing else. One clear action plus one environmental motion — breath, cloth, steam, traffic, a light shift — reads as real; three actions read as chaos.'
+      ),
+      r(
+        'Movement obeys weight and contact: feet land, cloth lags, liquid settles, the camera has mass. Do not ask for motion the frame cannot physically produce.'
+      ),
+      r(
+        'Match the amount of action to the length in brackets. A 4s shot is one beat; a 10s shot can carry a developing action or a full move.'
+      ),
+      r(
+        'Keep the look wording identical across prompts — same lens, same lighting, same grade, same stock. Consistency across shots is the whole job.'
+      ),
+      r(
+        'Hold continuity with the shots either side: same wardrobe, same location, same time of day, same light direction.'
+      ),
+      r(
+        'Cut adjectives that do not change the image. "Beautiful", "stunning", "cinematic", "masterpiece" cost tokens and buy nothing. A concrete noun beats a modifier.'
       ),
       r(
         "Use a scene's wired references by name only when the shot genuinely uses them; film-wide references apply to every shot."
@@ -337,7 +363,9 @@ The DAY CONTEXT you are given is the complete set of facts you may use: the day'
       r(
         'The look, the film stock, the aspect and any character description are not yours to reword. They are what makes this shot cut together with the others.'
       ),
-      r('Keep the order: subject, action, camera, lens, lighting, grade, film stock, aspect.'),
+      r(
+        'Keep the order: subject, action, camera move, lens, lighting, environmental motion, grade, film stock, aspect.'
+      ),
       r('Still one continuous shot, and still sized to the length in brackets.'),
       r(
         'Return the whole revised prompt, not a diff and not a description of what you changed.',
@@ -407,16 +435,24 @@ The DAY CONTEXT you are given is the complete set of facts you may use: the day'
     label: 'Generate a portrait',
     where: 'Storyboards → Cast → Generate portrait',
     slot: 'image',
-    role: 'Generate a single character reference photograph. This image will be used as the identity reference for every shot of this person in a film, so clarity matters more than drama.',
+    role: 'You are a visual-development photographer shooting the identity reference for one character. Every later shot of this person is matched to this frame, so it has to read cleanly before it reads beautifully.',
     rules: [
-      r('One person only. Nobody else in frame, no crowd, no reflection of another face.'),
-      r('Head and shoulders, facing the camera, eyes visible and open.'),
+      r('One person only. Nobody else in frame, no crowd, no second face in a reflection.'),
       r(
-        'Even, readable light on the face. No heavy shadow across the features, no silhouette, no extreme backlight.'
+        'Head and shoulders, facing the camera, eyes open and visible, neutral expression.'
       ),
-      r('Plain, uncluttered background. Nothing behind them that has to be matched later.'),
       r(
-        'Photoreal. No illustration, no 3D render, no text, no watermark, no border, no collage.'
+        'Portrait lens look — around 85mm, shot at eye level. No wide-angle distortion of the face.'
+      ),
+      r(
+        'Soft key from the front with gentle fill, even across both sides of the face. No hard shadow across the features, no silhouette, no extreme backlight, no coloured gel.'
+      ),
+      r(
+        'Plain, uncluttered background sitting behind the subject so the head separates from it. Nothing back there that has to be matched later.'
+      ),
+      r('Sharp on the eyes. Shallow depth is fine; the face is not.'),
+      r(
+        'Photoreal, with natural skin texture and colour. No illustration, no 3D render, no retouching, no text, watermark, border or collage.'
       ),
       r(
         'Follow the description exactly. Do not add accessories, tattoos, scars or hair colour it does not mention.'
@@ -433,16 +469,19 @@ The DAY CONTEXT you are given is the complete set of facts you may use: the day'
     label: 'Build a reference angle',
     where: 'Storyboards → Cast → after approving a portrait',
     slot: 'image',
-    role: 'The attached image is a character reference photograph. Generate another photograph OF THE SAME PERSON.',
+    role: "The attached image is this character's identity reference. Photograph the same person from a different camera angle, matched frame for frame in everything else.",
     rules: [
       r(
-        'Identity comes from the attached image, not from the description. Same face, same bone structure, same hair, same skin, same age. The description is there to confirm what you are looking at, never to override it.',
+        'Identity comes from the attached image, not from the description. Same face, same bone structure, same hair, same skin, same age. The description confirms what you are looking at; it never overrides it.',
         true
       ),
       r(
-        'Keep the same wardrobe, the same lighting character and the same background treatment as the attached image.'
+        'Change the camera angle only. Same wardrobe, same lighting direction and quality, same background treatment, same lens character, same distance from the subject.'
       ),
-      r('Change the camera angle and nothing else.'),
+      r(
+        'The new angle must be physically consistent with the first: the light comes from the same place in the room, so shadows fall where the move puts them.'
+      ),
+      r('Keep the eyes sharp and the face readable at the new angle.'),
       r(
         'One person only, photoreal, no text, no watermark, no border, no collage, no side-by-side comparison.'
       )
